@@ -444,7 +444,7 @@ func (p *Plan) Encode(text ...Encoding) (*Code, error) {
 
 	// Now we have the checksum bytes and the data bytes.
 	// Construct the actual code.
-	c := &Code{Size: len(p.Pixel), Stride: (len(p.Pixel) + 7) &^ 7}
+	c := &Code{Size: len(p.Pixel), Stride: (len(p.Pixel) + 7) >> 3}
 	c.Bitmap = make([]byte, c.Stride*c.Size)
 	crow := c.Bitmap
 	for _, row := range p.Pixel {
