@@ -54,7 +54,7 @@ func Encode(text string, level Level) (*Code, error) {
 	}
 
 	// Build and execute plan.
-	p, err := coding.NewPlan(v, l, 0)
+	p, err := coding.NewAutoPlan(v, l)
 	if err != nil {
 		return nil, err
 	}
@@ -62,8 +62,6 @@ func Encode(text string, level Level) (*Code, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// TODO: Pick appropriate mask.
 
 	return &Code{cc.Bitmap, cc.Size, cc.Stride, 8}, nil
 }

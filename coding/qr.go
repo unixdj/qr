@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"rsc.io/qr/gf256"
 )
@@ -318,6 +319,137 @@ func (c *Code) Black(x, y int) bool {
 		c.Bitmap[y*c.Stride+x/8]&(1<<uint(7-x&7)) != 0
 }
 
+// Penalty calculates the penalty value for c.
+func (c *Code) Penalty() int {
+	// Total penalty is the sum of penalties for runs and boxes
+	// of same-colour pixels, finder patterns and colour balance.
+	//
+	//   - RunP: for non-overlapping runs of n pixels, n>=5 -> n-2
+	//   - BoxP: for possibly overlapping 2x2 boxes -> 3
+	//   - FindP: for possibly overlapping finder patterns -> 40
+	//     The pattern is 010111010 with 000 on either side,
+	//     may extend into the quiet zone
+	//   - BalP: for n% of black pixels -> 10*(celing(abs(n-50)/5)-1)
+	//
+	// https://www.nayuki.io/page/creating-a-qr-code-step-by-step
+	const (
+		MinRun    = 5             // RunP:  miniumu run length
+		RunPDelta = -2            // RunP:  add to run length
+		BoxPP     = 3             // BoxP:  points per box
+		FindPP    = 40            // FindP: points per pattern
+		BalPP     = 10            // BalP:  10 points
+		BalPMul   = 20            //        for every 5% (100% / 20),
+		BalPMax   = BalPMul/2 - 1 //        up to 9 times
+
+		// last pixels are stored in a uint16 shifted left 4 bits,
+		// to match against 12 bit finder patterns without masking.
+		pShift = 16 - 12
+		// finder patterns:
+		FindB = uint16(0b0000_1011101_0 << pShift) // quiet zone before
+		FindA = uint16(0b0_1011101_0000 << pShift) // quiet zone after
+	)
+	p := 0   // total penalty
+	bal := 0 // black pixels
+
+	// horizontal runs: RunP, FindP, BoxP and count black pixels for BalP
+	for y := 0; y < c.Size; y++ {
+		black := c.Black(0, y) // last pixel is black?
+		r := 1                 // current run length for RunP
+		var pat uint16         // last 12 pixels for FindP
+		if black {
+			pat = 1 << pShift
+			bal++
+		}
+		// Scan rows from x=1.  BoxP is detected at the bottom right
+		// pixel, RunP and FindP require even larger x.
+		for x := 1; x < c.Size; x++ {
+			if c.Black(x, y) != black {
+				if r >= MinRun {
+					p += r + RunPDelta // RunP
+				}
+				black = !black
+				r = 0
+			} else if y != 0 && c.Black(x-1, y-1) == black &&
+				c.Black(x, y-1) == black {
+				p += BoxPP // BoxP
+			}
+			pat <<= 1
+			if black {
+				pat |= 1 << pShift
+				bal++
+			} else if pat == FindB || pat == FindA {
+				p += FindPP // FindP
+			}
+			r++
+		}
+		// handle last run
+		if r >= MinRun {
+			p += r + RunPDelta // RunP
+		}
+		// handle FindB with 1 pixel in the right quiet zone;
+		// also includes FindA with 4 pixels in the quiet zone
+		if pat <<= 1; pat == FindB {
+			p += 2 * FindPP // 2×FindP
+		} else {
+			// handle FindA with 1-4 pixels in quiet zone
+			switch FindA {
+			case pat, pat << 1, pat << 2, pat << 3:
+				p += FindPP // FindP
+			}
+		}
+	}
+
+	// calculate BalP
+	// Exact percentages get less penalty.  E.g., 40% and 60% get
+	// 10 points like 41%, not 20 like 39%.  To round away from 50%,
+	// fold bal into 0 <= n < c.Size²/2 and divide rounding down.
+	// No need to handle 50% as c.Size is always odd.
+	sq := c.Size * c.Size
+	if bal > sq/2 {
+		bal = sq - bal
+	}
+	p += (BalPMax - (bal * BalPMul / sq)) * BalPP
+
+	// vertical runs: RunP, FindP
+	for x := 0; x < c.Size; x++ {
+		black := c.Black(x, 0)
+		r := 1
+		var pat uint16
+		if black {
+			pat = 1 << pShift
+		}
+		for y := 1; y < c.Size; y++ {
+			if c.Black(x, y) != black {
+				if r >= MinRun {
+					p += r + RunPDelta // RunP
+				}
+				black = !black
+				r = 0
+			}
+			pat <<= 1
+			if black {
+				pat |= 1 << pShift
+			} else if pat == FindB || pat == FindA {
+				p += FindPP // FindP
+			}
+			r++
+		}
+		if r >= MinRun {
+			p += r + RunPDelta // RunP
+		}
+		if pat <<= 1; pat == FindB {
+			p += 2 * FindPP // 2×FindP
+		} else {
+			switch FindA {
+			case pat, pat << 1, pat << 2, pat << 3:
+				p += FindPP // FindP
+			}
+		}
+	}
+	println(p)
+	return p
+}
+
 // A Mask describes a mask that is applied to the QR
 // code to avoid QR artifacts being interpreted as
 // alignment and timing patterns (such as the squares
@@ -376,6 +508,52 @@ func NewPlan(version Version, level Level, mask Mask) (*Plan, error) {
 	return p, nil
 }
 
+// An AutoPlan describes how to construct a QR code
+// with a specific version and level.
+type AutoPlan struct {
+	Version Version
+	Level   Level
+}
+
+const (
+	versions = MaxVersion - MinVersion + 1
+	levels   = H - L + 1
+	masks    = 8
+)
+
+type autoPlan struct {
+	once sync.Once
+	p    *[masks]*Plan
+}
+
+var autoPlans [versions][levels]autoPlan
+
+func makeAutoPlan(version Version, level Level) error {
+	if version < MinVersion || version > MaxVersion {
+		return fmt.Errorf("invalid QR version %d", int(version))
+	}
+	if level < L || level > H {
+		return fmt.Errorf("invalid QR level %d", int(level))
+	}
+	if p := &autoPlans[version-MinVersion][level]; p.p == nil {
+		p.once.Do(func() {
+			func(p *autoPlan, v Version, l Level) {
+				p.p = &[masks]*Plan{}
+				for m := range p.p {
+					p.p[m], _ = NewPlan(v, l, Mask(m))
+				}
+			}(p, version, level)
+		})
+	}
+	return nil
+}
+
+// NewAutoPlan returns an AutoPlan for a QR code with the given
+// version and level.
+func NewAutoPlan(version Version, level Level) (AutoPlan, error) {
+	return AutoPlan{version, level}, makeAutoPlan(version, level)
+}
+
 func (b *Bits) Pad(n int) {
 	if n < 0 {
 		panic("qr: invalid pad size")
@@ -428,6 +606,25 @@ func (b *Bits) AddCheckBytes(v Version, l Level) {
 	}
 }
 
+func (p *Plan) encode(c *Code, bytes []byte) {
+	crow := c.Bitmap
+	for _, row := range p.Pixel {
+		for x, pix := range row {
+			switch pix.Role() {
+			case Data, Check:
+				o := pix.Offset()
+				if bytes[o/8]&(1<<uint(7-o&7)) != 0 {
+					pix ^= Black
+				}
+			}
+			if pix&Black != 0 {
+				crow[x/8] |= 1 << uint(7-x&7)
+			}
+		}
+		crow = crow[c.Stride:]
+	}
+}
+
 func (p *Plan) Encode(text ...Encoding) (*Code, error) {
 	var b Bits
 	for _, t := range text {
@@ -446,23 +643,47 @@ func (p *Plan) Encode(text ...Encoding) (*Code, error) {
 	// Construct the actual code.
 	c := &Code{Size: len(p.Pixel), Stride: (len(p.Pixel) + 7) >> 3}
 	c.Bitmap = make([]byte, c.Stride*c.Size)
-	crow := c.Bitmap
-	for _, row := range p.Pixel {
-		for x, pix := range row {
-			switch pix.Role() {
-			case Data, Check:
-				o := pix.Offset()
-				if bytes[o/8]&(1<<uint(7-o&7)) != 0 {
-					pix ^= Black
-				}
-			}
-			if pix&Black != 0 {
-				crow[x/8] |= 1 << uint(7-x&7)
+	p.encode(c, bytes)
+	return c, nil
+}
+
+func (p AutoPlan) Encode(text ...Encoding) (*Code, error) {
+	if err := makeAutoPlan(p.Version, p.Level); err != nil {
+		return nil, err
+	}
+	pp := autoPlans[p.Version-MinVersion][p.Level].p
+	var b Bits
+	for _, t := range text {
+		if err := t.Check(); err != nil {
+			return nil, err
+		}
+		t.Encode(&b, p.Version)
+	}
+	if b.Bits() > pp[0].DataBytes*8 {
+		return nil, fmt.Errorf("cannot encode %d bits into %d-bit code", b.Bits(), pp[0].DataBytes*8)
+	}
+	b.AddCheckBytes(p.Version, p.Level)
+	bytes := b.Bytes()
+
+	// Now we have the checksum bytes and the data bytes.
+	// Construct the actual code.
+	c := &Code{Size: len(pp[0].Pixel), Stride: (len(pp[0].Pixel) + 7) >> 3}
+	c.Bitmap = make([]byte, c.Stride*c.Size)
+	cc := &Code{Size: c.Size, Stride: c.Stride}
+	cc.Bitmap = make([]byte, len(c.Bitmap))
+	pen := 2 << 30 // largest possible penalty is way below 2<<23
+	for i, p := range pp {
+		if i > 1 {
+			for j := range c.Bitmap {
+				c.Bitmap[j] = 0
 			}
 		}
-		crow = crow[c.Stride:]
+		p.encode(c, bytes)
+		if p := c.Penalty(); p < pen {
+			cc, pen, c = c, p, cc
+		}
 	}
-	return c, nil
+	return cc, nil
 }
 
 // A version describes metadata associated with a version.
