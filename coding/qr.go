@@ -220,35 +220,24 @@ func (s String) Encode(b *Bits, v Version) {
 // A Pixel describes a single pixel in a QR code.
 type Pixel uint32
 
-const (
-	Black Pixel = 1 << iota
-	Invert
-)
-
 func (p Pixel) Offset() uint {
-	return uint(p >> 6)
+	return uint(p >> 4)
 }
 
 func OffsetPixel(o uint) Pixel {
-	return Pixel(o << 6)
+	return Pixel(o << 4)
 }
 
 func (r PixelRole) Pixel() Pixel {
-	return Pixel(r << 2)
+	return Pixel(r)
 }
 
 func (p Pixel) Role() PixelRole {
-	return PixelRole(p>>2) & 15
+	return PixelRole(p) & 15
 }
 
 func (p Pixel) String() string {
 	s := p.Role().String()
-	if p&Black != 0 {
-		s += "+black"
-	}
-	if p&Invert != 0 {
-		s += "+invert"
-	}
 	s += "+" + strconv.FormatUint(uint64(p.Offset()), 10)
 	return s
 }
@@ -317,6 +306,10 @@ type Code struct {
 func (c *Code) Black(x, y int) bool {
 	return 0 <= x && x < c.Size && 0 <= y && y < c.Size &&
 		c.Bitmap[y*c.Stride+x/8]&(1<<uint(7-x&7)) != 0
+}
+
+func (c *Code) set(b []byte, y, x int) {
+	b[y*c.Stride+x/8] |= 1 << (7 - x&7)
 }
 
 // Penalty calculates the penalty value for c.
@@ -486,71 +479,91 @@ type Plan struct {
 	Blocks     int // number of data blocks
 
 	Pixel [][]Pixel // pixel map
+	Code  Code      // 1 is black/inverted
 }
 
 // NewPlan returns a Plan for a QR code with the given
 // version, level, and mask.
+// If mask is -1, the Encode method will choose the best mask for the code.
 func NewPlan(version Version, level Level, mask Mask) (*Plan, error) {
-	p, err := vplan(version)
+	if version < MinVersion || version > MaxVersion {
+		return nil, fmt.Errorf("invalid QR version %d", int(version))
+	}
+	if level < L || level > H {
+		return nil, fmt.Errorf("invalid QR level %d", int(level))
+	}
+	n := 1
+	if mask == -1 {
+		n = 8
+	} else if mask < 0 || 7 < mask {
+		return nil, fmt.Errorf("invalid QR mask %d", int(mask))
+	}
+	p, err := vplan(version, n)
 	if err != nil {
 		return nil, err
 	}
-	if err := fplan(level, mask, p); err != nil {
-		return nil, err
-	}
-	if err := lplan(version, level, p); err != nil {
-		return nil, err
-	}
-	if err := mplan(mask, p); err != nil {
-		return nil, err
+	lplan(version, level, p)
+	if n == 1 {
+		fplan(level, mask, p, p.Code.Bitmap)
+		mplan(mask, p, p.Code.Bitmap)
+	} else {
+		sz := p.Code.Size * p.Code.Stride
+		for n := sz; n < len(p.Code.Bitmap); {
+			n += copy(p.Code.Bitmap[n:], p.Code.Bitmap[:n])
+		}
+		for mask = 0; mask < 8; mask++ {
+			fplan(level, mask, p, p.Code.Bitmap[int(mask)*sz:])
+			mplan(mask, p, p.Code.Bitmap[int(mask)*sz:])
+		}
+		p.Mask = -1
 	}
 	return p, nil
 }
 
-// An AutoPlan describes how to construct a QR code
-// with a specific version and level.
+// An AutoPlan describes how to construct a QR code with a
+// specific version and level.
 type AutoPlan struct {
-	Version Version
-	Level   Level
+	Version Version // Version
+	Level   Level   // Error correction level
 }
 
 const (
 	versions = MaxVersion - MinVersion + 1
 	levels   = H - L + 1
-	masks    = 8
 )
 
 type autoPlan struct {
 	once sync.Once
-	p    *[masks]*Plan
+	p    *Plan
 }
 
 var autoPlans [versions][levels]autoPlan
 
-func makeAutoPlan(version Version, level Level) error {
+func makeAutoPlan(version Version, level Level) (*Plan, error) {
 	if version < MinVersion || version > MaxVersion {
-		return fmt.Errorf("invalid QR version %d", int(version))
+		return nil, fmt.Errorf("invalid QR version %d", int(version))
 	}
 	if level < L || level > H {
-		return fmt.Errorf("invalid QR level %d", int(level))
+		return nil, fmt.Errorf("invalid QR level %d", int(level))
 	}
-	if p := &autoPlans[version-MinVersion][level]; p.p == nil {
+	p := &autoPlans[version-MinVersion][level]
+	if p.p == nil {
 		p.once.Do(func() {
-			func(p *autoPlan, v Version, l Level) {
-				p.p = &[masks]*Plan{}
-				for m := range p.p {
-					p.p[m], _ = NewPlan(v, l, Mask(m))
-				}
-			}(p, version, level)
+			p.p, _ = NewPlan(version, level, -1)
 		})
 	}
-	return nil
+	return p.p, nil
 }
 
 // NewAutoPlan returns an AutoPlan for a QR code with the given
-// version and level.
+// version and level.  Its Encode method is functionally equivalent
+// to that of a Plan returned by NewPlan(version, level, -1),
+// except the Plan is permanently allocated.
 func NewAutoPlan(version Version, level Level) (AutoPlan, error) {
-	return AutoPlan{version, level}, makeAutoPlan(version, level)
+	if _, err := makeAutoPlan(version, level); err != nil {
+		return AutoPlan{}, err
+	}
+	return AutoPlan{version, level}, nil
 }
 
 func (b *Bits) Pad(n int) {
@@ -605,25 +618,6 @@ func (b *Bits) AddCheckBytes(v Version, l Level) {
 	}
 }
 
-func (p *Plan) encode(c *Code, bytes []byte) {
-	crow := c.Bitmap
-	for _, row := range p.Pixel {
-		for x, pix := range row {
-			switch pix.Role() {
-			case Data, Check:
-				o := pix.Offset()
-				if bytes[o/8]&(1<<uint(7-o&7)) != 0 {
-					pix ^= Black
-				}
-			}
-			if pix&Black != 0 {
-				crow[x/8] |= 1 << uint(7-x&7)
-			}
-		}
-		crow = crow[c.Stride:]
-	}
-}
-
 func (p *Plan) Encode(text ...Encoding) (*Code, error) {
 	var b Bits
 	for _, t := range text {
@@ -633,56 +627,69 @@ func (p *Plan) Encode(text ...Encoding) (*Code, error) {
 		t.Encode(&b, p.Version)
 	}
 	if b.Bits() > p.DataBytes*8 {
-		return nil, fmt.Errorf("cannot encode %d bits into %d-bit code", b.Bits(), p.DataBytes*8)
+		return nil, fmt.Errorf("cannot encode %d bits into %d-bit code",
+			b.Bits(), p.DataBytes*8)
 	}
 	b.AddCheckBytes(p.Version, p.Level)
 	bytes := b.Bytes()
 
 	// Now we have the checksum bytes and the data bytes.
-	// Construct the actual code.
-	c := &Code{Size: len(p.Pixel), Stride: (len(p.Pixel) + 7) >> 3}
-	c.Bitmap = make([]byte, c.Stride*c.Size)
-	p.encode(c, bytes)
+	// Construct the bitmap consisting of data and checksum bits.
+	data := make([]byte, p.Code.Size*p.Code.Stride)
+	if len(data) == len(p.Code.Bitmap) {
+		copy(data, p.Code.Bitmap) // one mask: copy the bitmap
+	}
+	crow := data
+	for _, row := range p.Pixel {
+		for x, pix := range row {
+			switch pix.Role() {
+			case Data, Check:
+				o := pix.Offset()
+				if bytes[o/8]&(1<<uint(7-o&7)) != 0 {
+					crow[x/8] ^= 1 << uint(7-x&7)
+				}
+			}
+		}
+		crow = crow[p.Code.Stride:]
+	}
+
+	c := &Code{Size: p.Code.Size, Stride: p.Code.Stride}
+	if len(data) == len(p.Code.Bitmap) {
+		c.Bitmap = data // one mask: done
+	} else {
+		// Apply masks to the bitmap to construct the actual codes.
+		// Choose the code with the smallest penalty.
+		c.Bitmap = make([]byte, len(data))
+		best := make([]byte, len(data)) // best bitmap so far
+		pen := 2 << 30                  // largest penalty is < 2<<23
+		for b := p.Code.Bitmap; len(b) != 0; {
+			// set bitmap to plan bits xor data bits
+			b = b[copy(c.Bitmap, b):]
+			for i, v := range data {
+				c.Bitmap[i] ^= v
+			}
+			if p := c.Penalty(); p < pen {
+				best, pen, c.Bitmap = c.Bitmap, p, best
+			}
+		}
+		c.Bitmap = best
+	}
 	return c, nil
 }
 
-func (p AutoPlan) Encode(text ...Encoding) (*Code, error) {
-	if err := makeAutoPlan(p.Version, p.Level); err != nil {
+// Encode encodes text using p with 8 masks, returning the QR
+// code with the smallest penalty.
+func (a AutoPlan) Encode(text ...Encoding) (*Code, error) {
+	p, err := makeAutoPlan(a.Version, a.Level)
+	if err != nil {
 		return nil, err
 	}
-	pp := autoPlans[p.Version-MinVersion][p.Level].p
-	var b Bits
-	for _, t := range text {
-		if err := t.Check(); err != nil {
-			return nil, err
-		}
-		t.Encode(&b, p.Version)
-	}
-	if b.Bits() > pp[0].DataBytes*8 {
-		return nil, fmt.Errorf("cannot encode %d bits into %d-bit code", b.Bits(), pp[0].DataBytes*8)
-	}
-	b.AddCheckBytes(p.Version, p.Level)
-	bytes := b.Bytes()
+	return p.Encode(text...)
+}
 
-	// Now we have the checksum bytes and the data bytes.
-	// Construct the actual code.
-	c := &Code{Size: len(pp[0].Pixel), Stride: (len(pp[0].Pixel) + 7) >> 3}
-	c.Bitmap = make([]byte, c.Stride*c.Size)
-	cc := &Code{Size: c.Size, Stride: c.Stride}
-	cc.Bitmap = make([]byte, len(c.Bitmap))
-	pen := 2 << 30 // largest possible penalty is way below 2<<23
-	for i, p := range pp {
-		if i > 1 {
-			for j := range c.Bitmap {
-				c.Bitmap[j] = 0
-			}
-		}
-		p.encode(c, bytes)
-		if p := c.Penalty(); p < pen {
-			cc, pen, c = c, p, cc
-		}
-	}
-	return cc, nil
+// Encode encodes text using an AutoPlan with the given version and level.
+func Encode(version Version, level Level, text ...Encoding) (*Code, error) {
+	return AutoPlan{version, level}.Encode(text...)
 }
 
 // A version describes metadata associated with a version.
@@ -753,7 +760,7 @@ func grid(siz int) [][]Pixel {
 }
 
 // vplan creates a Plan for the given version.
-func vplan(v Version) (*Plan, error) {
+func vplan(v Version, n int) (*Plan, error) {
 	p := &Plan{Version: v}
 	if v < 1 || v > 40 {
 		return nil, fmt.Errorf("invalid QR version %d", int(v))
@@ -761,22 +768,26 @@ func vplan(v Version) (*Plan, error) {
 	siz := 17 + int(v)*4
 	m := grid(siz)
 	p.Pixel = m
+	p.Code.Size = siz
+	p.Code.Stride = (siz + 7) >> 3
+	p.Code.Bitmap = make([]byte, p.Code.Stride*siz*n)
 
 	// Timing markers (overwritten by boxes).
 	const ti = 6 // timing is in row/column 6 (counting from 0)
+	pix := Timing.Pixel()
 	for i := range m {
-		p := Timing.Pixel()
+		m[i][ti] = pix
+		m[ti][i] = pix
 		if i&1 == 0 {
-			p |= Black
+			p.Code.set(p.Code.Bitmap, i, ti)
+			p.Code.set(p.Code.Bitmap, ti, i)
 		}
-		m[i][ti] = p
-		m[ti][i] = p
 	}
 
 	// Position boxes.
-	posBox(m, 0, 0)
-	posBox(m, siz-7, 0)
-	posBox(m, 0, siz-7)
+	posBox(m, &p.Code, 0, 0)
+	posBox(m, &p.Code, siz-7, 0)
+	posBox(m, &p.Code, 0, siz-7)
 
 	// Alignment boxes.
 	info := &vtab[v]
@@ -785,7 +796,7 @@ func vplan(v Version) (*Plan, error) {
 			// don't overwrite timing markers
 			if (x < 7 && y < 7) || (x < 7 && y+5 >= siz-7) || (x+5 >= siz-7 && y < 7) {
 			} else {
-				alignBox(m, x, y)
+				alignBox(m, &p.Code, x, y)
 			}
 			if y == 4 {
 				y = info.apos
@@ -803,50 +814,24 @@ func vplan(v Version) (*Plan, error) {
 	// Version pattern.
 	pat := vtab[v].pattern
 	if pat != 0 {
+		pix := PVersion.Pixel()
 		v := pat
 		for x := 0; x < 6; x++ {
 			for y := 0; y < 3; y++ {
-				p := PVersion.Pixel()
+				m[siz-11+y][x] = pix
+				m[x][siz-11+y] = pix
 				if v&1 != 0 {
-					p |= Black
+					p.Code.set(p.Code.Bitmap, siz-11+y, x)
+					p.Code.set(p.Code.Bitmap, x, siz-11+y)
 				}
-				m[siz-11+y][x] = p
-				m[x][siz-11+y] = p
 				v >>= 1
 			}
 		}
 	}
 
-	// One lonely black pixel
-	m[siz-8][8] = Unused.Pixel() | Black
-
-	return p, nil
-}
-
-// fplan adds the format pixels
-func fplan(l Level, m Mask, p *Plan) error {
 	// Format pixels.
-	fb := uint32(l^1) << 13 // level: L=01, M=00, Q=11, H=10
-	fb |= uint32(m) << 10   // mask
-	const formatPoly = 0x537
-	rem := fb
-	for i := 14; i >= 10; i-- {
-		if rem&(1<<uint(i)) != 0 {
-			rem ^= formatPoly << uint(i-10)
-		}
-	}
-	fb |= rem
-	invert := uint32(0x5412)
-	siz := len(p.Pixel)
 	for i := uint(0); i < 15; i++ {
 		pix := Format.Pixel() + OffsetPixel(i)
-		if (fb>>i)&1 == 1 {
-			pix |= Black
-		}
-		if (invert>>i)&1 == 1 {
-			pix ^= Invert | Black
-		}
-		// top left
 		switch {
 		case i < 6:
 			p.Pixel[i][8] = pix
@@ -863,6 +848,50 @@ func fplan(l Level, m Mask, p *Plan) error {
 			p.Pixel[8][siz-1-int(i)] = pix
 		default:
 			p.Pixel[siz-1-int(14-i)][8] = pix
+		}
+	}
+
+	// One lonely black pixel
+	m[siz-8][8] = Unused.Pixel()
+	p.Code.set(p.Code.Bitmap, siz-8, 8)
+
+	return p, nil
+}
+
+// fplan sets the format bits
+func fplan(l Level, m Mask, p *Plan, b []byte) error {
+	// Format pixels.
+	fb := uint32(l^1) << 13 // level: L=01, M=00, Q=11, H=10
+	fb |= uint32(m) << 10   // mask
+	const formatPoly = 0x537
+	rem := fb
+	for i := 14; i >= 10; i-- {
+		if rem&(1<<uint(i)) != 0 {
+			rem ^= formatPoly << uint(i-10)
+		}
+	}
+	fb |= rem
+	fb ^= uint32(0x5412)
+	siz := len(p.Pixel)
+	for i := 0; i < 15; i++ {
+		if (fb>>i)&1 == 1 {
+			switch {
+			case i < 6:
+				p.Code.set(b, i, 8)
+			case i < 8:
+				p.Code.set(b, i+1, 8)
+			case i < 9:
+				p.Code.set(b, 8, 7)
+			default:
+				p.Code.set(b, 8, 14-i)
+			}
+			// bottom right
+			switch {
+			case i < 8:
+				p.Code.set(b, 8, siz-1-i)
+			default:
+				p.Code.set(b, siz-1-14+i, 8)
+			}
 		}
 	}
 	return nil
@@ -971,12 +1000,12 @@ func lplan(v Version, l Level, p *Plan) error {
 }
 
 // mplan edits a version+level-only Plan to add the mask.
-func mplan(m Mask, p *Plan) error {
+func mplan(m Mask, p *Plan, b []byte) error {
 	p.Mask = m
 	for y, row := range p.Pixel {
 		for x, pix := range row {
 			if r := pix.Role(); (r == Data || r == Check || r == Extra) && p.Mask.Invert(y, x) {
-				row[x] ^= Black | Invert
+				p.Code.set(b, y, x)
 			}
 		}
 	}
@@ -984,16 +1013,15 @@ func mplan(m Mask, p *Plan) error {
 }
 
 // posBox draws a position (large) box at upper left x, y.
-func posBox(m [][]Pixel, x, y int) {
+func posBox(m [][]Pixel, c *Code, x, y int) {
 	pos := Position.Pixel()
 	// box
 	for dy := 0; dy < 7; dy++ {
 		for dx := 0; dx < 7; dx++ {
-			p := pos
+			m[y+dy][x+dx] = pos
 			if dx == 0 || dx == 6 || dy == 0 || dy == 6 || 2 <= dx && dx <= 4 && 2 <= dy && dy <= 4 {
-				p |= Black
+				c.set(c.Bitmap, y+dy, x+dx)
 			}
-			m[y+dy][x+dx] = p
 		}
 	}
 	// white border
@@ -1020,16 +1048,15 @@ func posBox(m [][]Pixel, x, y int) {
 }
 
 // alignBox draw an alignment (small) box at upper left x, y.
-func alignBox(m [][]Pixel, x, y int) {
+func alignBox(m [][]Pixel, c *Code, x, y int) {
 	// box
 	align := Alignment.Pixel()
 	for dy := 0; dy < 5; dy++ {
 		for dx := 0; dx < 5; dx++ {
-			p := align
+			m[y+dy][x+dx] = align
 			if dx == 0 || dx == 4 || dy == 0 || dy == 4 || dx == 2 && dy == 2 {
-				p |= Black
+				c.set(c.Bitmap, y+dy, x+dx)
 			}
-			m[y+dy][x+dx] = p
 		}
 	}
 }
