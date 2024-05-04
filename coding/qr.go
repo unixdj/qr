@@ -446,7 +446,6 @@ func (c *Code) Penalty() int {
 			}
 		}
 	}
-	println(p)
 	return p
 }
 
