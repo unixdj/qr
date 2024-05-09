@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/text/encoding/japanese"
 	"rsc.io/qr/gf256"
 )
 
@@ -214,6 +215,47 @@ func (s String) Encode(b *Bits, v Version) {
 	b.Write(uint(len(s)), stringLen[v.sizeClass()])
 	for i := 0; i < len(s); i++ {
 		b.Write(uint(s[i]), 8)
+	}
+}
+
+// Kanji is the encoding for kanji.
+// Valid characters are those in JIS X 0208.
+type Kanji string
+
+func (s Kanji) String() string {
+	return fmt.Sprintf("Kanji(%#q)", string(s))
+}
+
+func (s Kanji) Check() error {
+	// XXX not the best way to achieve this
+	_, err := japanese.ShiftJIS.NewEncoder().String(string(s))
+	if err != nil {
+		err = fmt.Errorf("non-kanji string %#q", string(s))
+	}
+	return err
+}
+
+var kanjiLen = [3]int{8, 10, 12}
+
+func (s Kanji) Bits(v Version) int {
+	n := 4 + kanjiLen[v.sizeClass()]
+	for range s {
+		n += 13
+	}
+	return n
+}
+
+func (s Kanji) Encode(b *Bits, v Version) {
+	k, err := japanese.ShiftJIS.NewEncoder().String(string(s))
+	if err != nil || len(k)&1 != 0 {
+		println("fail!", string(k), err.Error())
+		return
+	}
+	b.Write(8, 4)
+	b.Write(uint(len(k)/2), kanjiLen[v.sizeClass()])
+	for i := 0; i < len(k); i += 2 {
+		w := uint(k[i]&^0xc0)*0xc0 + uint(k[i+1]) - 0x100
+		b.Write(w, 13)
 	}
 }
 
