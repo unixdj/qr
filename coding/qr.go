@@ -799,12 +799,6 @@ func (c *Code) Penalty() int {
 	return p
 }
 
-// A Mask describes a mask that is applied to the QR
-// code to avoid QR artifacts being interpreted as
-// alignment and timing patterns (such as the squares
-// in the corners).  Valid masks are integers from 0 to 7.
-type Mask int
-
 // A Plan describes how to construct a QR code
 // with a specific version and level.
 type Plan struct {
@@ -857,7 +851,7 @@ func makePlan(version Version, level Level) (*Plan, error) {
 	if p.p == nil {
 		p.once.Do(func() {
 			pp := vplan(version, level)
-			for mask := Mask(0); mask < 8; mask++ {
+			for mask := 0; mask < 8; mask++ {
 				fplan(level, mask, pp)
 				mplan(mask, pp)
 			}
@@ -1287,10 +1281,10 @@ func vplan(v Version, l Level) *Plan {
 }
 
 // fplan sets the format bits
-func fplan(l Level, m Mask, p *Plan) {
+func fplan(l Level, mask int, p *Plan) {
 	// Format pixels.
-	fb := uint16(l^1) << 13 // level: L=01, M=00, Q=11, H=10
-	fb |= uint16(m) << 10   // mask
+	fb := uint16(l^1) << 13  // level: L=01, M=00, Q=11, H=10
+	fb |= uint16(mask) << 10 // mask
 	const formatPoly = 0x537
 	rem := fb
 	for i := 4; i >= 0; i-- {
@@ -1300,7 +1294,7 @@ func fplan(l Level, m Mask, p *Plan) {
 	}
 	fb |= rem
 	fb ^= 0x5412
-	b := p.Pattern[m]
+	b := p.Pattern[mask]
 	siz := p.Size
 	stride := (siz + 7) >> 3
 	off := 1
@@ -1349,12 +1343,12 @@ var maskPat = [8][]uint16{
 }
 
 // mplan edits a version+level-only Plan to add the mask.
-func mplan(m Mask, p *Plan) {
-	b := p.Pattern[m]
+func mplan(mask int, p *Plan) {
+	b := p.Pattern[mask]
 	_ = b[len(p.Map)-1]
 	stride := uint16(p.Size+7) >> 3
-	mp := maskPat[m] // mask patterns
-	r := 0           // row index
+	mp := maskPat[mask] // mask patterns
+	r := 0              // row index
 	// var pat [144]byte
 	for n := 0; n < len(p.Map); {
 		pb := [3]byte{byte(mp[r] >> 4), byte(mp[r] >> 2), byte(mp[r])}
