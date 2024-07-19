@@ -1,3 +1,29 @@
-Basic QR encoder.
+Go QR encoder package.
 
-go get [-u] rsc.io/qr
+go get [-u] github.com/unixdj/qr
+
+Based on rsc.io/qr by Russ Cox.  Drop in replacement for package qr.
+The API of package coding is incompatible.
+
+Improvements to qr.Encode:
+
+  * Automatic mask selection
+  * Splitting text into segments to minimise encoded length
+  * Kanji mode segments
+  * Faster encoding
+
+Added features in package qr:
+
+  * Splitting text into multiple QR codes (Structured Append)
+  * Printing QR codes as text
+  * Prepending an ECI mode segment to set character encoding
+  * Character encodings:
+    * UTF-8 (default)
+    * UTF-8 with byte mode segments encoded as ISO 8859-1
+    * Shift JIS, Shift JISx0213 (Shift JIS-2004)
+    * ASCII-compatible eight bit encodings
+
+Packages coding and split:
+
+  * Adding segment encoders
+  * Adding input character encodings

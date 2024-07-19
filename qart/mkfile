@@ -1,4 +1,0 @@
-deploy:V:
-	GOOS=js GOARCH=wasm go build -o main.wasm
-	gsutil cp index.html main.wasm $GOROOT/misc/wasm/wasm_exec.js gs://swtch/www-blog/qr/draw/
-	rm main.wasm

@@ -16,12 +16,18 @@ import (
 // PNG returns a PNG image displaying the code.
 //
 // PNG uses a custom encoder tailored to QR codes.
-// Its compressed size is about 2x away from optimal,
+// Its compressed size is about 4x away from optimal,
 // but it runs about 20x faster than calling png.Encode
 // on c.Image().
 func (c *Code) PNG() []byte {
 	var p pngWriter
-	return p.encode(c)
+	return p.encode(c, false)
+}
+
+// PNG returns a PNG image displaying the reversed code.
+func (c Reversed) PNG() []byte {
+	var p pngWriter
+	return p.encode(c.Code, true)
 }
 
 type pngWriter struct {
@@ -34,7 +40,7 @@ type pngWriter struct {
 
 var pngHeader = []byte("\x89PNG\r\n\x1a\n")
 
-func (w *pngWriter) encode(c *Code) []byte {
+func (w *pngWriter) encode(c *Code, reverse bool) []byte {
 	scale := c.Scale
 	siz := c.Size
 
@@ -57,7 +63,7 @@ func (w *pngWriter) encode(c *Code) []byte {
 	w.writeChunk("tEXt", comment)
 
 	// Data
-	w.zlib.writeCode(c)
+	w.zlib.writeCode(c, reverse)
 	w.writeChunk("IDAT", w.zlib.bytes.Bytes())
 
 	// End
@@ -85,8 +91,12 @@ func (w *pngWriter) writeChunk(name string, data []byte) {
 	w.buf.Write(w.wctmp[0:4])
 }
 
-func (b *bitWriter) writeCode(c *Code) {
+func (b *bitWriter) writeCode(c *Code, reverse bool) {
 	const ftNone = 0
+	var white byte
+	if !reverse {
+		white = 255
+	}
 
 	b.adler32.Reset()
 	b.bytes.Reset()
@@ -109,14 +119,18 @@ func (b *bitWriter) writeCode(c *Code) {
 	// First row.
 	b.byte(ftNone)
 	n := (scale*(siz+8) + 7) / 8
-	b.byte(255)
-	b.repeat(n-1, 1)
-	// 4*scale rows total.
-	b.repeat((4*scale-1)*(1+n), 1+n)
+	if reverse {
+		b.repeat((4*scale)*(1+n)-1, 1)
+	} else {
+		b.byte(255)
+		b.repeat(n-1, 1)
+		// 4*scale rows total.
+		b.repeat((4*scale-1)*(1+n), 1+n)
+	}
 
 	for i := 0; i < 4*scale; i++ {
 		b.adler32.WriteNByte(ftNone, 1)
-		b.adler32.WriteNByte(255, n)
+		b.adler32.WriteNByte(white, n)
 	}
 
 	row := make([]byte, 1+n)
@@ -129,7 +143,7 @@ func (b *bitWriter) writeCode(c *Code) {
 			// Raw data.
 			for i := 0; i < scale; i++ {
 				z <<= 1
-				if !c.Black(x, y) {
+				if c.Black(x, y) == reverse {
 					z |= 1
 				}
 				if nz++; nz == 8 {
@@ -155,14 +169,18 @@ func (b *bitWriter) writeCode(c *Code) {
 	// White border.
 	// First row.
 	b.byte(ftNone)
-	b.byte(255)
-	b.repeat(n-1, 1)
-	// 4*scale rows total.
-	b.repeat((4*scale-1)*(1+n), 1+n)
+	if reverse {
+		b.repeat((4*scale)*(1+n)-1, 1)
+	} else {
+		b.byte(255)
+		b.repeat(n-1, 1)
+		// 4*scale rows total.
+		b.repeat((4*scale-1)*(1+n), 1+n)
+	}
 
 	for i := 0; i < 4*scale; i++ {
 		b.adler32.WriteNByte(ftNone, 1)
-		b.adler32.WriteNByte(255, n)
+		b.adler32.WriteNByte(white, n)
 	}
 
 	// End of block.
