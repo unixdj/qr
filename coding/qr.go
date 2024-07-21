@@ -495,39 +495,10 @@ func (m *ModeEncoder) isValid(seg Segment) bool {
 
 // IsValid reports whether seg is encodable.
 func (seg Segment) IsValid() bool {
-	if m := getMode(seg.Mode); m == nil {
-		return false
-	} else {
+	if m := getMode(seg.Mode); m != nil {
 		return m.isValid(seg)
 	}
-	if m := getMode(seg.Mode); m == nil {
-		return false
-	} else if f := m.Valid; f != nil {
-		return f(seg.Text)
-	} else if is := m.Accepts; is != nil {
-		if seg.Mode < 2 {
-			for i := 0; i < len(seg.Text); i++ {
-				if !is(rune(seg.Text[i])) {
-					return false
-				}
-			}
-		} else if cut := m.CutRune; cut != nil {
-			for s := seg.Text; s != ""; {
-				r, sz := cut(s)
-				s = s[sz:]
-				if !is(r) {
-					return false
-				}
-			}
-		} else {
-			for _, r := range seg.Text {
-				if !is(r) {
-					return false
-				}
-			}
-		}
-	}
-	return true
+	return false
 }
 
 // EncodedLength returns the encoded length in bits of seg in the
