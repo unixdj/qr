@@ -131,10 +131,7 @@ type Reversed struct {
 }
 
 // Black returns true if the original pixel at (x,y) is white.
-func (c Reversed) Black(x, y int) bool {
-	return 0 <= x && x < c.Size && 0 <= y && y < c.Size &&
-		c.Bitmap[y*c.Stride+x/8]&(1<<uint(7&^x)) == 0
-}
+func (c Reversed) Black(x, y int) bool { return !c.Code.Black(x, y) }
 
 // String returns a multiline string containing the code for printing
 // on a dark background.
