@@ -304,9 +304,10 @@ var _stdmodes = []ModeEncoder{
 		},
 	},
 	Latin1: {
-		Name:        "latin-1",
-		CountLength: [3]byte{8, 16, 16},
-		Accepts:     func(r rune) bool { return uint32(r) < 0x100 },
+		Name:          "latin-1",
+		CountLength:   [3]byte{8, 16, 16},
+		EncodedLength: func(b, r int) int { return r * 8 },
+		Accepts:       func(r rune) bool { return uint32(r) < 0x100 },
 		Transform: func(s string) (Segment, bool) {
 			t, err := charmap.ISO8859_1.NewEncoder().String(s)
 			return Segment{t, Byte}, err == nil
