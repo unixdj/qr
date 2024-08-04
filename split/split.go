@@ -473,7 +473,7 @@ func (s String) MinLength() int {
 }
 
 /*
-strSplitter and its component types.
+sSplitter and its component types.
 
 String.Splitter determines modes in which each rune in the string is
 encodable and creates a slice of spans, each span describing a
@@ -481,7 +481,7 @@ substring of runes encodable in the same modes.  To avoid multiple
 allocations, the span structure contains an array of segments for the
 modes.
 
-strSplitter.Split creates a linked list of segments representing an
+sSplitter.Split creates a linked list of segments representing an
 optimal split of the data.  A segment contains its mode, length in
 bytes and runes, total encoded length in bits of the string from this
 segment to the end, and a link to the next segment.
@@ -489,24 +489,24 @@ segment to the end, and a link to the next segment.
 The split is calculated by walking the spans backwards, though the
 algorithm works in either direction, as shown below.  For each span n,
 for each mode m, a segment (n,m) is created representing an optimal
-split for the string from segment n to the end, starting with mode m.
+split for the string from span n to the end, starting with mode m.  A
+segment with the shortest total encoding in span n is termed (n,best).
 
-The segment (n,m) is created thusly.  For each mode mm in which span
-n+1 is encodable, a segment (n,m,mm) linking to (n+1,mm) is created.
-If m=mm, the segments are merged.  The encoded length is calculated,
-and the total encoded length of the next segment is added to it.  Of
-these segments, the one with the smallest total encoded length is
-chosen as (n,m).
+The segment (n,m) is created thusly.  Up to two segments are created,
+one linking to (n+1,best) and another merged with (n+1,m), if such
+exists.  Either may be optimised out.  The encoded length of each
+segment is calculated, and the total encoded length of the next
+segment is added to it.  The segment with the smaller total encoded
+length is chosen, preferring the merged segment.
 
-When the beginning of the span slice is reached, a segment (0,m) with
-the smallest total encoded length for any m describes an optimal split
-for the whole string.
+When the beginning of the span slice is reached, the segment (0,best)
+describes an optimal split for the whole string.
 
-strSplitter.SplitTo walks the spans forward in the same manner until
-the encoded size limit is reached.  It then splits the last span in
-two at a rune boundary, adding the initial part to the previous span,
-binary-searching for the rightmost split point where the encoding fits
-into the specified size.  After that it reverses the linked list.
+sSplitter.SplitTo walks the spans forward in the same manner until the
+encoding exceeds the size limit.  It then splits the last span in two
+at the rightmost rune boundary at which the encoding fits into the
+specified size, adding the initial part to the previous span.  After
+that it reverses the linked list.
 */
 type (
 	// segment describes a segment encoded in a certain mode.
@@ -519,7 +519,7 @@ type (
 	segdata struct {
 		next *segment // link to next segment in the chain
 		len  uint32   // length of string in bytes
-		rlen uint32   // length of string in Unicode code points
+		rlen uint32   // length of string in runes
 		bits uint32   // encoded size of all segments in the chain
 	}
 
@@ -528,15 +528,21 @@ type (
 		len  uint32     // length of string in bytes
 		rlen uint32     // length of string in Unicode code points
 		seg  [4]segment // segments
+		best *segment   // shortest segment
 	}
 
-	// strSplitter is a Splitter returned by String.Splitter
+	// sSplitter is a Splitter returned by String.Splitter
 	// and a Result.
-	strSplitter struct {
+	sSplitter struct {
+		sResult        // string and split result
+		sp      []span // spans
+		rm      []byte // rune map of the string for SplitTo
+	}
+
+	// sResult is a Result sometimes returned by sSplitter.SplitTo.
+	sResult struct {
 		s    string   // string
-		sp   []span   // spans
-		rm   []byte   // rune map of s for SplitTo
-		head *segment // optimal split for Result
+		head *segment // optimal split
 	}
 )
 
@@ -545,6 +551,8 @@ type (
 func (s String) Splitter() (Splitter, error) {
 	if s.Text == "" {
 		return Null{}, nil
+	} else if len(s.Text) >= 1<<32 {
+		return nil, ErrLongText
 	}
 
 	// Get the Classifier function for the modes.
@@ -581,10 +589,10 @@ func (s String) Splitter() (Splitter, error) {
 	if list[Byte] == Latin1 && 96 < len(s.Text) && len(s.Text) < 0xCD80 {
 		hier &^= kanjiMode // hack, see UTF8Charset.Classifier
 	}
-	// If there are modes common for all segments, mask modes
-	// within the hierarchy above the lowest common mode.
-	// Mostly useful with alphanumeric strings or Latin1+Kanji.
-	// In the latter case may reduce the number of spans.
+	// If there are modes common for all segments, mask modes within
+	// the hierarchy above the lowest common mode.  Mostly useful with
+	// single span strings, alphanumeric strings or Latin1+Kanji.
+	// In the last case may reduce the number of spans.
 	mask ^= (common ^ -common) & hier
 
 	// Populate spans
@@ -604,16 +612,11 @@ func (s String) Splitter() (Splitter, error) {
 			start = uint32(i)
 			seg := &sp[n].seg
 			for j := range seg {
-				if v == 0 {
+				if v&(1<<j) != 0 {
+					seg[j].mode = list[j]
+				} else {
 					seg[j].mode = -1
-					break
 				}
-				bit := v & -v
-				v &^= bit
-				seg[j].mode = list[(bit>>1-bit>>3)&3]
-			}
-			if v != 0 {
-				panic("qr: internal error")
 			}
 		}
 		sp[n].rlen++
@@ -621,10 +624,25 @@ func (s String) Splitter() (Splitter, error) {
 	sp[n].len = uint32(len(modes)) - start
 	sp = sp[:n+1]
 
-	return &strSplitter{s: s.Text, sp: sp, rm: modes}, nil
+	return &sSplitter{sResult: sResult{s: s.Text}, sp: sp, rm: modes}, nil
 }
 
-const inf = 0x8000 << 4 // excessive encoded length (max is 16*0x5c60)
+// isRuneMode reports whether the mode's EncodedLength is rune-based.
+func isRuneMode(mode coding.Mode) bool {
+	if mode < ECI {
+		return (1<<Kanji|1<<Latin1)>>mode&1 != 0
+	} else {
+		return 16 < mode.Length(0, 1, 0)
+	}
+}
+
+const (
+	inf1    = 0x6000    // excessive encoded length for one code (>0x5c60)
+	inf     = inf1 * 16 // excessive encoded length for structured append
+	maxSpan = inf / 3   // max span length for (sSplitter).SplitTo
+
+	_ uint32 = inf1 * maxSpan // check for overflow
+)
 
 func (d *segdata) setBits(mode coding.Mode, class int) {
 	d.bits = uint32(min(mode.Length(int(d.len), int(d.rlen), class), inf))
@@ -633,184 +651,290 @@ func (d *segdata) setBits(mode coding.Mode, class int) {
 	}
 }
 
-// add adds v to the split before/after p, returning a pointer to the
-// segment with the smallest encoded length.
-func (v *span) add(p *span, class int) *segment {
-	best := &v.seg[0]
+// add adds v to the split before/after next, returning a pointer to
+// the segment with the smallest encoded length.
+func (v *span) add(next *span, class int) *segment {
+	const (
+		minHeader = 4 + 8
+		maxHeader = 4 + 16
+	)
+	var nbest *segment
+	if next != nil {
+		nbest = next.best
+	}
 	for j := range v.seg {
 		seg := &v.seg[j]
 		if seg.mode < 0 {
-			break
+			continue
 		}
 		seg.bits = inf
-		// p.seg is an array, not a slice, so range works when p is nil
-		for k := range p.seg {
-			if k != 0 && p.seg[k].mode < 0 {
-				break
-			}
-			c := segdata{len: v.len, rlen: v.rlen}
-			var add uint32
-			if p != nil {
-				c.next = &p.seg[k]
-				if seg.mode == c.next.mode {
-					c.len += c.next.len
-					c.rlen += c.next.rlen
-					c.next = c.next.next
-					add--
+		// for each seg.mode, one or two segments are created:
+		// - if next contains a segment "ns" of the same mode up to
+		//   20 bits longer than nbest: merged with ns
+		// - if next is nil, does not contain ns, or ns is over 12
+		//   bits longer than nbest: linking to nbest
+		if next != nil && next.seg[j].mode == seg.mode {
+			ns := &next.seg[j]
+			if d := ns.bits - nbest.bits; d <= maxHeader {
+				seg.len = v.len + ns.len
+				seg.rlen = v.rlen + ns.rlen
+				seg.next = ns.next
+				seg.setBits(seg.mode, class)
+				if v.best == nil || seg.bits <= v.best.bits {
+					v.best = seg
+				}
+				if d <= minHeader {
+					continue
 				}
 			}
-			c.setBits(seg.mode, class)
-			if c.bits+add < seg.bits {
-				seg.segdata = c
-			}
-			if p == nil {
-				break
-			}
 		}
-		if seg.bits < best.bits {
-			best = seg
+		c := segdata{len: v.len, rlen: v.rlen, next: nbest}
+		c.setBits(seg.mode, class)
+		if c.bits < seg.bits {
+			seg.segdata = c
+			if v.best == nil || c.bits < v.best.bits {
+				v.best = seg
+			}
 		}
 	}
-	return best
+	return v.best
 }
 
-// best returns a pointer to the segment in sp.seg with the smallest
-// total encoded length.
-func (sp *span) best() *segment {
-	seg := &sp.seg[0]
-	for j := 1; j < len(sp.seg) && sp.seg[j].mode >= 0; j++ {
-		if sp.seg[j].bits < seg.bits {
-			seg = &sp.seg[j]
-		}
-	}
-	return seg
-}
-
-func (s *strSplitter) Split(class int) (Result, int) {
+func (s *sSplitter) Split(class int) (Result, int) {
 	// process spans in reverse order
-	var head *segment
 	var next *span
 	for i := len(s.sp) - 1; i >= 0; i-- {
-		head = s.sp[i].add(next, class)
+		s.sp[i].add(next, class)
 		next = &s.sp[i]
 	}
-	s.head = head
-	return s, int(head.bits)
+	s.head = s.sp[0].best
+	return s, int(s.head.bits)
 }
 
-// splitTo calculates an optimal split for s, stopping when the
-// encoded size reaches lim bits or at the end.  It returns the number
-// of spans processed and the total encoded size.
-func (s *strSplitter) splitTo(lim uint32, class int) (int, uint32) {
+// splitOver calculates an optimal split for s, stopping when the
+// encoded size exceeds lim bits or at the end.  It returns the index
+// of the last processed span.
+func (s *sSplitter) splitOver(lim uint32, class int) int {
 	var prev *span
-	var sz uint32
 	var i int
 	// process spans in forward order
-	for ; sz < lim && i < len(s.sp); i++ {
-		sz = s.sp[i].add(prev, class).bits
+	for i = range s.sp {
+		if lim < s.sp[i].add(prev, class).bits {
+			break
+		}
 		prev = &s.sp[i]
 	}
-	return i, sz
+	return i
 }
 
 // reverse reverses the linked list of segments from a forward split.
 func (seg *segment) reverse() *segment {
-	bits := seg.bits
 	var next *segment
 	for seg != nil {
 		seg, next, seg.next = seg.next, seg, next
 	}
-	next.bits = bits
 	return next
 }
 
-func (s *strSplitter) SplitTo(lim, class int) (Result, int, Splitter) {
-	ll := uint32(lim)
-	off, siz := s.splitTo(ll, class)
-	if off == len(s.sp) && siz <= ll {
-		s.head = s.sp[off-1].best().reverse()
-		return s, int(s.head.bits), nil
+func (s *sSplitter) SplitTo(lim, class int) (Result, int, Splitter) {
+	ll := uint32(min(lim, inf1))
+	off := s.splitOver(ll, class)
+	this := &s.sp[off] // this span
+	if last := this.best; last.bits <= ll {
+		s.head = last.reverse()
+		return s, int(last.bits), nil
 	}
-	if siz > ll {
-		off-- // s.sp[off:] is tail
+	if maxSpan < this.len {
+		s.breakSpan(off)
+		off = s.splitOver(ll, class)
+		this = &s.sp[off]
 	}
+	// partition the span s.sp[off], add the beginning to head
 	var start uint32 // start of this span
-	for i := 0; i < off; i++ {
-		start += s.sp[i].len
-	}
-	// binary search the split point
-	this := s.sp[off]             // this span
-	var b, r uint32               // beginning, rune count up to b
-	e := this.len                 // end
-	subs := s.rm[start : start+e] // substring rune map
-	var prev *span                // pointer to previous span
+	var prev *span   // pointer to previous span
 	if off > 0 {
+		for i := range s.sp[:off] {
+			start += s.sp[i].len
+		}
 		prev = &s.sp[off-1]
+		s.sp = s.sp[off:] // s.sp[off:] is tail
 	}
-	// split the span s.sp[off], add the beginning to head
-	for b < e {
-		// target is within [b, e].  bias mid-point towards the end.
-		mid := (b + e + 1) / 2
-		rr := r
-		// count runes, advance past partial rune
-		for i := b; i < mid; i++ {
-			if subs[i] != 0 {
-				rr++
-			}
+	sb, sr := this.len, this.rlen  // saved span byte and rune lengths
+	var b, r uint32                // partial span byte and rune lengths
+	subs := s.rm[start : start+sb] // span substring rune map
+	var seg segment                // last segment
+	runes := sb != sr
+
+	// estimate last span's partition point
+	if sr < 5 {
+		if r = sr / 2; r == 0 {
+			goto skip
 		}
-		for mid < e && subs[mid] == 0 {
-			mid++
-		}
-		this.len, this.rlen = mid, rr
-		if this.add(prev, class).bits <= ll {
-			b = mid
-			r = rr
-		} else {
-			// backtrack e one rune from mid
-			for e = mid - 1; b < e && subs[e] == 0; e-- {
-			}
-		}
-	}
-	this.len, this.rlen = b, r
-	if b += start; b == 0 {
-		return nil, 0, s // not enough place for one rune
-	}
-	tail := &strSplitter{s: s.s[b:], sp: s.sp[off:], rm: s.rm[b:]}
-	*s = strSplitter{s: s.s[:b], sp: s.sp[:off], rm: s.rm[:b]}
-	var seg *segment
-	if this.len == 0 {
-		seg = s.sp[off-1].best()
 	} else {
-		tail.sp[0].len -= this.len
-		tail.sp[0].rlen -= this.rlen
-		seg = this.add(prev, class)
-		// if s.sp is not empty, stuff the last segment
-		// into the last span
-		if seg.next != nil {
-			v := s.sp[off-1].seg
-			for j := len(v) - 1; j >= 0; j-- {
-				if &v[j] != seg.next {
-					v[j] = *seg
-					seg = &v[j]
+		// estimate split point by division using last segment's mode
+		const (
+			mina   = 5  // mininum bits per alphanumeric rune
+			minest = 10 // estimate 1 rune if fewer bits available
+			hlen   = 13 // nominal header length (must be <4+10+4)
+		)
+		avail := ll
+		if prev != nil {
+			avail -= prev.best.bits
+		}
+		if avail < mina {
+			goto skip
+		}
+		last := this.best
+		if last.len != sb {
+			// segment merged, get actual available bits
+			for i := range prev.seg {
+				if v := &prev.seg[i]; v.mode == last.mode {
+					avail = ll - v.bits
 					break
 				}
 			}
+		} else {
+			avail -= hlen // segment not merged, subtract header
+			// avail may underflow.  if small non-negative
+			// (originally 13-22 bits) and mode is numeric
+			// or alphanumeric, will likely be merged into
+			// alphanumeric (<=4 runes) or byte (<=2).
+			if prev != nil && avail < minest && last.mode < 2 {
+				r = 2
+			}
+		}
+		if int32(avail) >= minest {
+			bits := last.bits - hlen // subtract nominal header
+			if last.next != nil {
+				bits -= last.next.bits
+			}
+			runes = runes && isRuneMode(last.mode)
+			sl, maxr := last.len, sb // segment and span lengths
+			if runes {
+				sl, maxr = last.rlen, sr
+			}
+			r = min(avail*sl/bits, maxr-1)
 		}
 	}
-	s.head = seg.reverse()
-	return s, int(s.head.bits), tail
+	// set b and r
+	if r < 2 {
+		b, r = 1, 1 // don't try adding an empty span
+	} else if runes {
+		rr := r - 1
+		for b = 1; rr != 0 && int(b) < len(subs); b++ {
+			if subs[b] != 0 {
+				rr--
+			}
+		}
+	} else if b = r; sb != sr {
+		r = 0
+		for _, v := range subs[:b] {
+			if v != 0 {
+				r++
+			}
+		}
+	}
+	for int(b) < len(subs) && subs[b] == 0 {
+		b++
+	}
+
+	// find the actual partition by stepping one rune at a time
+	this.len, this.rlen = b, r
+	for this.rlen < sr {
+		// as long as split fits in lim, advance
+		if ll < this.add(prev, class).bits {
+			break
+		}
+		b, r, seg = this.len, this.rlen, *this.best
+		if ll < seg.bits+3 {
+			break // 1 rune adds at least 3 bits
+		}
+		bb := b + 1
+		for int(bb) < len(subs) && subs[bb] == 0 {
+			bb++
+		}
+		this.len, this.rlen = bb, r+1
+	}
+	if seg.len == 0 {
+		// if estimate was too large, backtrack until split fits
+		for {
+			for b--; subs[b] == 0; b-- {
+			}
+			if r--; r == 0 {
+				break
+			}
+			this.len, this.rlen = b, r
+			if last := this.add(prev, class); last.bits <= ll {
+				seg = *last
+				break
+			}
+		}
+	}
+
+	// seg contains the last segment of result unless b is zero.
+	// restore this (first span of tail), return result and tail.
+	this.len, this.rlen = sb-b, sr-r
+skip:
+	var last *segment
+	if r != 0 {
+		// if head's spans are empty, allocate a new segment,
+		// otherwise stuff the last segment into the last span.
+		if prev == nil {
+			last = &segment{}
+		} else if last = &prev.seg[0]; last == seg.next {
+			last = &prev.seg[1]
+		}
+		*last = seg
+	} else if prev != nil {
+		last = prev.best
+	} else {
+		return nil, 0, s // not enough space for one rune
+	}
+	res := &sResult{s: s.s, head: last.reverse()}
+	s.s, s.rm = s.s[start+b:], s.rm[start+b:]
+	return res, int(last.bits), s
 }
 
-func (s *strSplitter) Len() int {
+// breakSpan breaks an excessively long span.  This can only happen in
+// pathological cases with non-standard encodings.
+//
+//go:noinline
+func (s *sSplitter) breakSpan(n int) {
+	var start uint32
+	for i := range s.sp[:n] {
+		start += s.sp[i].len
+	}
+	for ; maxSpan < s.sp[n].len; n++ {
+		s.sp = append(s.sp[:n+1], s.sp[n:]...)
+		var b, r uint32
+		// if a rune is over maxSpan/4 bytes (32 KB) long,
+		// SplitTo may run really slowly.  Don't care.
+		end := start + maxSpan*3/4
+		for b = start; b < end; b++ {
+			if s.rm[b] != 0 {
+				r++
+			}
+		}
+		for s.rm[b] == 0 {
+			b++
+		}
+		s.sp[n].len, s.sp[n].rlen = b-start, r
+		s.sp[n+1].len -= s.sp[n].len
+		s.sp[n+1].rlen -= s.sp[n].rlen
+		start = b
+	}
+}
+
+func (r *sResult) Len() int {
 	var n int
-	for seg := s.head; seg != nil; seg = seg.next {
+	for seg := r.head; seg != nil; seg = seg.next {
 		n++
 	}
 	return n
 }
 
-func (s *strSplitter) Append(a []coding.Segment) []coding.Segment {
-	for seg, s := s.head, s.s; seg != nil; seg = seg.next {
+func (r *sResult) Append(a []coding.Segment) []coding.Segment {
+	for s, seg := r.s, r.head; seg != nil; seg = seg.next {
 		a = append(a, coding.Segment{
 			Text: s[:seg.len],
 			Mode: seg.mode,
