@@ -899,7 +899,7 @@ var chartbl = [256]byte{
 	al, by, by, by, al, al, by, by, by, by, al, al, by, al, by, al, // 0x20
 	nu, nu, nu, nu, nu, nu, nu, nu, nu, nu, al, by, by, by, by, by, // 0x30
 	by, al, al, al, al, al, al, al, al, al, al, al, al, al, al, al, // 0x40
-	al, al, al, al, al, al, al, al, al, by, by, by, by, by, by, by, // 0x50
+	al, al, al, al, al, al, al, al, al, al, al, by, by, by, by, by, // 0x50
 	by, by, by, by, by, by, by, by, by, by, by, by, by, by, by, by, // 0x60
 	by, by, by, by, by, by, by, by, by, by, by, by, by, by, by, by, // 0x70
 	xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, // 0x80
