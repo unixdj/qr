@@ -222,13 +222,13 @@ func Split(data Data, level coding.Level) ([]coding.Segment, coding.Version, err
 // parity returns the Structured Append Parity Data (xor of all bytes)
 // for a text mode segment, or 0 for any other segment.
 func parity(seg coding.Segment) byte {
-	var sum byte
+	var par byte
 	if seg.Mode < ECI {
 		for i := 0; i < len(seg.Text); i++ {
-			sum ^= seg.Text[i]
+			par ^= seg.Text[i]
 		}
 	}
-	return sum
+	return par
 }
 
 // SplitMulti returns segments for data split across up to 16 QR codes
@@ -242,7 +242,10 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 	if level < L || level > H {
 		return nil, coding.ErrLevel
 	}
-	const maxCodes = 16
+	const (
+		maxCodes = 16      // maximum Structured Append Symbols
+		sabits   = 4 + 2*8 // Structured Append Header bit size
+	)
 
 	// prepare Structured Append segment and header
 	if header == nil {
@@ -252,9 +255,7 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 	if err != nil {
 		return nil, err
 	}
-	sa := Segment{"xx", StructAppend}
 	class := ver.SizeClass()
-	_, sabits := sa.Split(class)
 	hr, hbits := hs.Split(class)
 
 	// calculate data size per code
@@ -272,7 +273,7 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 	}
 	parts := make([]Result, 0, maxCodes)
 	for sp != nil {
-		if len(parts) == cap(parts) {
+		if len(parts) == maxCodes {
 			return nil, ErrLongText
 		}
 		var r Result
@@ -285,31 +286,31 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 	// allocate segments, copy structured append segment and header
 	segs := make([][]coding.Segment, len(parts))
 	hsegs := 1 + hr.Len()
-	segs[0] = make([]coding.Segment, 0, hsegs+parts[0].Len())
-	segs[0] = hr.Append(sa.Append(segs[0]))
+	segs[0] = hr.Append(make([]coding.Segment, 1, hsegs+parts[0].Len()))
+	segs[0][0].Mode = StructAppend
 	for i := 1; i < len(segs); i++ {
 		segs[i] = make([]coding.Segment, hsegs, hsegs+parts[i].Len())
 		copy(segs[i], segs[0])
 	}
-	var sum byte // checksum
-	// if odd number of codes, calculate header checksum
+	var par byte // parity
+	// if odd number of codes, calculate header parity
 	if len(segs)&1 != 0 {
 		for j, v := 1, segs[0]; j < len(v); j++ {
 			if v[j], err = v[j].Transform(); err != nil {
 				return nil, err
 			}
-			sum ^= parity(v[j])
+			par ^= parity(v[j])
 		}
 	}
 
-	// copy data segments, transform (for Kanji), calculate checksum
+	// copy data segments, transform (for Kanji), calculate parity
 	for i := range segs {
 		segs[i] = parts[i].Append(segs[i])
 		for j, v := hsegs, segs[i]; j < len(v); j++ {
 			if v[j], err = v[j].Transform(); err != nil {
 				return nil, err
 			}
-			sum ^= parity(v[j])
+			par ^= parity(v[j])
 		}
 	}
 
@@ -317,7 +318,7 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 	sad := make([]byte, len(segs)*2)
 	num := byte(len(segs) - 1)
 	for i := 0; i < len(sad); i += 2 {
-		sad[i], sad[i+1] = byte(i)<<3|num, sum
+		sad[i], sad[i+1] = byte(i)<<3|num, par
 	}
 	sas := string(sad)
 	for i := range segs {
