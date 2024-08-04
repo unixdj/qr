@@ -857,20 +857,23 @@ type Charset interface {
 	Classifier() (c Classifier, m ModeList, mh byte)
 }
 
-// chartbl bits: 00KL0ban
+// chartbl bits: HKL00ban
 //
-//	K  0x20  first byte of Kanji (maybe)       parse UTF-8, check kanji
-//	L  0x10  first byte of Latin-1             parse UTF-8, set byte mode
-//	-  0x08  (kanji mode, unset in chartbl)
-//	b  0x04  byte mode (ASCII)
+//	H  0x80  high byte                         Latin1: reset byte mode
+//	K  0x40  first byte of Kanji (maybe)       check kanji
+//	L  0x20  first byte of Latin-1             Latin1: set byte mode
+//	-  0x10  unset
+//	b  0x04  byte mode (always set)
 //	a  0x02  alphanumeric mode
 //	n  0x01  numeric mode
 //
 // chartbl is used by some Classifier functions to determine in which
 // modes the character is encodable.
 //
-// 4 low bits set the modes for ASCII characters.  classifyByte and
-// classifyRune always set byteMode.  kanjiMode is always unset.
+// 4 low bits set the modes for UTF-8 characters.  kanjiMode is always
+// unset.
+//
+// The H bit is set on bytes >=0x80.
 //
 // The K bit enables Kanji validation.  It is set on 15 bytes that may
 // begin a UTF-8 character encodable in Kanji mode.
@@ -880,17 +883,19 @@ type Charset interface {
 const (
 	numMode   = 1 << iota // numeric
 	alphaMode             // alphanumeric
-	byteMode              // byte          chartbl: set for ASCII
+	byteMode              // byte          chartbl: always set
 	kanjiMode             // kanji         chartbl: unset
+	_                     //
 	latin1Bit             //               chartbl: Latin-1 if valid rune
 	kanjiBit              //               chartbl: maybe Kanji
+	highBit               //               chartbl: high byte
 
-	by = byteMode       // ASCII: byte
+	by = byteMode       // ASCII byte
 	al = by | alphaMode // alphanumeric
 	nu = al | numMode   // numeric
-	ka = kanjiBit       // kanji
+	hi = by | highBit   // high
+	ka = hi | kanjiBit  // kanji
 	l1 = ka | latin1Bit // latin1 + kanji
-	xx = 0              // other high bytes
 )
 
 var chartbl = [256]byte{
@@ -902,14 +907,14 @@ var chartbl = [256]byte{
 	al, al, al, al, al, al, al, al, al, al, al, by, by, by, by, by, // 0x50
 	by, by, by, by, by, by, by, by, by, by, by, by, by, by, by, by, // 0x60
 	by, by, by, by, by, by, by, by, by, by, by, by, by, by, by, by, // 0x70
-	xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, // 0x80
-	xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, // 0x90
-	xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, // 0xa0
-	xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, // 0xb0
-	xx, xx, l1, l1, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, ka, ka, // 0xc0
-	ka, ka, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, // 0xd0
-	xx, xx, ka, ka, ka, ka, ka, ka, ka, ka, xx, xx, xx, xx, xx, ka, // 0xe0
-	xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, xx, // 0xf0
+	hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, // 0x80
+	hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, // 0x90
+	hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, // 0xa0
+	hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, // 0xb0
+	hi, hi, l1, l1, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, ka, ka, // 0xc0
+	ka, ka, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, // 0xd0
+	hi, hi, ka, ka, ka, ka, ka, ka, ka, ka, hi, hi, hi, hi, hi, ka, // 0xe0
+	hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, hi, // 0xf0
 }
 
 // UTF8Charset implements Charset for UTF-8 strings using the given
@@ -978,7 +983,7 @@ func (a asciiCompat) classify(s string) (byte, int) {
 	if a.is(r) {
 		m |= kanjiMode
 	}
-	return m | byteMode, sz
+	return m, sz
 }
 
 // classify classifies a UTF-8 rune for standard Numeric, Alphanumeric
@@ -986,7 +991,7 @@ func (a asciiCompat) classify(s string) (byte, int) {
 func (is acceptsByte) classify(s string) (byte, int) {
 	r, sz := utf8.DecodeRuneInString(s)
 	m := chartbl[s[0]] & (numMode | alphaMode | kanjiBit)
-	if m&kanjiBit != 0 && sz != 1 && coding.IsKanji(r) {
+	if m&kanjiBit != 0 && coding.IsKanji(r) {
 		m |= kanjiMode
 	}
 	if is == nil || is(r) {
@@ -995,28 +1000,34 @@ func (is acceptsByte) classify(s string) (byte, int) {
 	return m, sz
 }
 
-// classifyByte classifies bytes for standard Numeric, Alphanumeric
+// classifyByte classifies a byte for standard Numeric, Alphanumeric
 // and Byte modes.
-func classifyByte(s string) (byte, int) { return chartbl[s[0]] | byteMode, 1 }
+func classifyByte(s string) (byte, int) { return chartbl[s[0]], 1 }
+
+// classifyRune classifies a rune for standard Numeric, Alphanumeric,
+// Byte and Kanji modes.
+func classifyRune(s string) (byte, int) {
+	m := chartbl[s[0]]
+	r, sz := utf8.DecodeRuneInString(s)
+	if m&kanjiBit != 0 && coding.IsKanji(r) {
+		m |= kanjiMode
+	}
+	return m, sz
+}
 
 // classifyLatin1 classifies a rune for Numeric, Alphanumeric, Latin1
 // and Kanji modes.
 func classifyLatin1(s string) (byte, int) {
 	m := chartbl[s[0]]
 	r, sz := utf8.DecodeRuneInString(s)
-	if m&kanjiBit != 0 && sz != 1 {
-		if m >>= 2; !coding.IsKanji(r) {
+	if m&highBit != 0 {
+		if sz == 1 {
+			m = 0
+		} else if m = m >> 3; !coding.IsKanji(r) {
 			m &^= kanjiMode
 		}
 	}
 	return m, sz
-}
-
-// classifyRune classifies a rune for standard Numeric, Alphanumeric,
-// Byte and Kanji modes.
-func classifyRune(s string) (byte, int) {
-	m, sz := classifyLatin1(s)
-	return m | byteMode, sz
 }
 
 // charset is a Charset returned by NewCharset.
