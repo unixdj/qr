@@ -66,9 +66,15 @@ type Bits struct {
 	nbit int
 }
 
-// NewBits returns Bits with enough space for a QR code of the given version.
-func NewBits(v Version) *Bits {
-	return &Bits{b: make([]byte, 0, vtab[v].bytes)}
+// NewBits returns Bits with enough capacity for a QR code of the
+// given version and level.
+func NewBits(v Version, l Level) *Bits {
+	vt := &vtab[v]
+	n := vt.bytes
+	if 1 < vt.level[l].nblock {
+		n <<= 1
+	}
+	return &Bits{b: make([]byte, 0, n)}
 }
 
 func (b *Bits) Reset() {
@@ -101,9 +107,9 @@ func (b *Bits) Add(n int) []byte {
 		panic("qr: fractional byte")
 	}
 	b.Grow(n)
-	b.nbit += 8 * n
 	start := len(b.b)
 	b.b = b.b[:start+n]
+	b.nbit = 8 * len(b.b)
 	return b.b[start:]
 }
 
@@ -137,9 +143,6 @@ const (
 	ECI                       // eci mode, raw segment
 	StructAppend              // structured append, raw segment
 )
-
-// FNC1First                 // fnc1 in first position, no data
-// FNC1Second                // fnc1 in second position, raw segment
 
 // A Mode is a QR segment encoder.
 type Mode int16
@@ -265,7 +268,7 @@ var _stdmodes = []ModeEncoder{
 			return uint32(b), 4
 		},
 		Encode2: func(b [2]byte) (uint32, int) {
-			return uint32(b[0]*10 + b[1] - '0'*11&0xff), 7
+			return uint32(b[0])*10 + uint32(b[1]) - '0'*11&0x7f, 7
 		},
 		Encode3: func(b [3]byte) (uint32, int) {
 			return uint32(b[0])*100 + uint32(b[1])*10 +
@@ -357,20 +360,6 @@ var _stdmodes = []ModeEncoder{
 			return len(s) == 2 && s[0]>>4 <= s[0]&0x0f
 		},
 	},
-	/*
-		FNC1First: {
-			Name:      "fnc1-first",
-			Indicator: 5,
-			Accepts:   nothing,
-			Valid:     func(s string) bool { return s == "" },
-		},
-		FNC1Second: {
-			Name:      "fnc1-second",
-			Indicator: 9,
-			Accepts:   nothing,
-			Valid:     func(s string) bool { return len(s) == 1 },
-		},
-	*/
 }
 
 var (
@@ -426,6 +415,20 @@ func (mode Mode) RuneFilter() (CutRuneFunc, AcceptsFunc) {
 	return nil, nothing
 }
 
+// length returns the length in bits of a valid string of the given
+// length in bytes and runes encoded in mode at the given QR version
+// size class, including the header.  Length returns 0 if and only if
+// mode is invalid.
+func (m *ModeEncoder) length(bytes, runes int, class int) int {
+	n := 4 + int(m.CountLength[class])
+	if f := m.EncodedLength; f != nil {
+		n += f(bytes, runes)
+	} else {
+		n += bytes * 8
+	}
+	return n
+}
+
 // Length returns the length in bits of a valid string of the given
 // length in bytes and runes encoded in mode at the given QR version
 // size class, including the header.  Length returns 0 if and only if
@@ -433,12 +436,7 @@ func (mode Mode) RuneFilter() (CutRuneFunc, AcceptsFunc) {
 func (mode Mode) Length(bytes, runes int, class int) int {
 	n := 0
 	if m := getMode(mode); m != nil {
-		n = 4 + int(m.CountLength[class])
-		if f := m.EncodedLength; f != nil {
-			n += f(bytes, runes)
-		} else {
-			n += bytes * 8
-		}
+		n = m.length(bytes, runes, class)
 	}
 	return n
 }
@@ -507,9 +505,11 @@ func (seg Segment) IsValid() bool {
 // if mode is invalid.  The segment is not validated.
 func (seg Segment) EncodedLength(class int) int {
 	var rlen int
-	if seg.Mode <= Byte ||
+	m := getMode(seg.Mode)
+	if m == nil {
+		return 0
+	} else if seg.Mode <= Byte ||
 		ShiftJISKanji <= seg.Mode && seg.Mode <= StructAppend {
-	} else if m := getMode(seg.Mode); m == nil {
 	} else if m.CutRune != nil {
 		for s, cut := seg.Text, m.CutRune; s != ""; rlen++ {
 			_, sz := cut(s)
@@ -518,7 +518,7 @@ func (seg Segment) EncodedLength(class int) int {
 	} else {
 		rlen = utf8.RuneCountInString(seg.Text)
 	}
-	return seg.Mode.Length(len(seg.Text), rlen, class)
+	return m.length(len(seg.Text), rlen, class)
 }
 
 // Transform transforms seg for encoding.  The transformed segment is
@@ -919,7 +919,11 @@ func (b *Bits) Permute(v Version, l Level) BitStream {
 	}
 	dst := src
 	if nblock := vt.level[l].nblock; nblock != 1 {
-		dst = make([]byte, vt.bytes)
+		if cap(src) < len(src)*2 {
+			dst = make([]byte, vt.bytes)
+		} else {
+			dst = src[len(src) : len(src)*2]
+		}
 		nd := v.DataBytes(l)
 		interleave(dst[:nd], src[:nd], nblock)
 		interleave(dst[nd:], src[nd:], nblock)
@@ -997,7 +1001,7 @@ type Encoder struct {
 }
 
 func newEncoder(p *Plan) *Encoder {
-	return &Encoder{p: p, b: NewBits(p.Version)}
+	return &Encoder{p: p, b: NewBits(p.Version, p.Level)}
 }
 
 // NewEncoder returns an Encoder for the given version and level.
@@ -1316,17 +1320,18 @@ var maskPat = [8][]uint16{
 
 // mplan edits a version+level-only Plan to add the mask.
 func mplan(mask int, p *Plan) {
+	stride := (p.Size + 7) >> 3
+	m := p.Map
 	b := p.Pattern[mask]
-	_ = b[len(p.Map)-1]
-	stride := uint16(p.Size+7) >> 3
 	mp := maskPat[mask] // mask patterns
 	r := 0              // row index
-	// var pat [144]byte
-	for n := 0; n < len(p.Map); {
+	for len(b) != 0 {
+		var br, mr []byte
+		br, b = b[:stride], b[stride:]
+		mr, m = m[:stride], m[stride:]
 		pb := [3]byte{byte(mp[r] >> 4), byte(mp[r] >> 2), byte(mp[r])}
-		for i := uint16(0); i < stride; i++ {
-			b[n] |= pb[i%3] &^ p.Map[n]
-			n++
+		for i, v := range mr {
+			br[i] |= pb[i%3] &^ v
 		}
 		if r++; r == len(mp) {
 			r = 0
