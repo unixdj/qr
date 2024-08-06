@@ -648,10 +648,15 @@ const (
 	_ uint32 = inf1 * maxSpan // check for overflow
 )
 
-func (d *segdata) setBits(mode coding.Mode, class int) {
-	d.bits = uint32(min(mode.Length(int(d.len), int(d.rlen), class), inf))
-	if d.next != nil {
-		d.bits += d.next.bits
+// set sets seg to the segment of the given parameters if the latter's
+// total encoded length is less than the former's.
+func (seg *segment) set(next *segment, len, rlen uint32, class int) {
+	bits := uint32(min(seg.mode.Length(int(len), int(rlen), class), inf))
+	if next != nil {
+		bits += next.bits
+	}
+	if bits < seg.bits {
+		seg.segdata = segdata{next, len, rlen, bits}
 	}
 }
 
@@ -681,10 +686,8 @@ func (v *span) add(next *span, class int) *segment {
 		if next != nil && next.seg[j].mode == seg.mode {
 			ns := &next.seg[j]
 			if d := ns.bits - nbest.bits; d <= maxHeader {
-				seg.len = v.len + ns.len
-				seg.rlen = v.rlen + ns.rlen
-				seg.next = ns.next
-				seg.setBits(seg.mode, class)
+				seg.set(ns.next, v.len+ns.len, v.rlen+ns.rlen,
+					class)
 				if v.best == nil || seg.bits <= v.best.bits {
 					v.best = seg
 				}
@@ -693,13 +696,9 @@ func (v *span) add(next *span, class int) *segment {
 				}
 			}
 		}
-		c := segdata{len: v.len, rlen: v.rlen, next: nbest}
-		c.setBits(seg.mode, class)
-		if c.bits < seg.bits {
-			seg.segdata = c
-			if v.best == nil || c.bits < v.best.bits {
-				v.best = seg
-			}
+		seg.set(nbest, v.len, v.rlen, class)
+		if v.best == nil || seg.bits < v.best.bits {
+			v.best = seg
 		}
 	}
 	return v.best
