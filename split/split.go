@@ -570,9 +570,9 @@ func (s String) Splitter() (Splitter, error) {
 	// Scan the string, detect valid encoding modes for each character
 	var (
 		n, sz  int
-		m      byte
 		modes  = make([]byte, len(s.Text))
 		common = hier
+		m, all byte
 	)
 	for i := 0; i < len(s.Text); i += sz {
 		old := m
@@ -584,10 +584,14 @@ func (s String) Splitter() (Splitter, error) {
 		if m != old {
 			n++
 			common &= m
+			if latin1HackScan {
+				all |= m
+			}
 		}
 	}
-	if list[Byte] == Latin1 && 96 < len(s.Text) && len(s.Text) < 0xCD80 {
-		hier &^= kanjiMode // hack, see UTF8Charset.Classifier
+	if latin1HackScan && list[Byte] == Latin1 && (common != byteMode ||
+		all&kanjiMode != 0 && latin1NeedKanji(modes, hier)) {
+		hier &^= kanjiMode // hack, see latin1HackMask
 	}
 	// If there are modes common for all segments, mask modes within
 	// the hierarchy above the lowest common mode.  Mostly useful with
@@ -1072,11 +1076,9 @@ func (c UTF8Charset) Classifier() (Classifier, ModeList, byte) {
 	case Byte:
 		cf = classifyRune
 	case Latin1:
-		// Add byte<kanji to mode hierarchy.  Fails for
-		// len 1 at class 1: byte=4+16+8, kanji=4+10+13
-		// in strings with no kanji besides "§¨°±´¶×÷".
-		// String.Splitter resets it if class may be 1.
-		mh |= kanjiMode
+		if latin1HackMask {
+			mh |= kanjiMode // hack, see latin1HackMask
+		}
 		cf = classifyLatin1
 	default:
 		_, is := coding.Mode(c).RuneFilter()
@@ -1154,6 +1156,58 @@ func classifyLatin1(s string) (byte, int) {
 		}
 	}
 	return m, sz
+}
+
+/*
+latin1HackMask ans latin1HackScan enable conditional compilation of
+Latin1 optimisations.
+
+If latin1HackMask is enabled, the mode hierarchy for UTF8AsLatin1
+includes Kanji above Latin1.  If all runes are encodable in Latin1,
+Kanji will be masked, likely reducing the number of segments.  This
+affects strings containing the characters "§¨°±´¶×÷" which belong to
+both Latin-1 and QR Kanji character sets but no other Kanji.
+
+Latin1 Mode is preferred over Kanji except for one rune segments in
+size class 1 (4+16+8=28 vs. 4+10+13=27 bits).  Masking Kanji increases
+the encoded length of such segments in class 1.
+
+If latin1HackScan is enabled, the byte mode is Latin1, all spans are
+encodable in byte mode and some in Kanji mode, latin1NeedKanji will
+scan the rune mode map for one rune spans encodable in both modes not
+adjacent to a Latin1-only span.  If such spans exist, Kanji mode will
+be removed from the hierarchy.
+
+SplitMulti may result in such spans at QR code boundaries, losing up
+to 2 bits per code if Kanji mode is masked.  I take the hit.
+*/
+const (
+	latin1HackMask = false
+	latin1HackScan = latin1HackMask && false
+)
+
+/*
+latin1NeedKanji reports whether the input string contains a one rune
+byte|kanji mode span not adjacent to a byte mode only span.  See
+latin1HackMask for details.
+*/
+func latin1NeedKanji(modes []byte, hier byte) bool {
+	var old byte = alphaMode
+	var need bool
+	for _, v := range modes {
+		if v == 0 {
+			continue
+		} else if v == byteMode|kanjiMode {
+			need = old&alphaMode != 0
+		} else if need && v&alphaMode != 0 {
+			break
+		} else {
+			need = false
+		}
+		old = v
+	}
+	println("hier:", need)
+	return need
 }
 
 // charset is a Charset returned by NewCharset.
