@@ -658,6 +658,7 @@ func (v *span) add(next *span, class int) *segment {
 		minHeader = 4 + 8
 		maxHeader = 4 + 16
 	)
+	v.best = nil
 	var nbest *segment
 	if next != nil {
 		nbest = next.best
