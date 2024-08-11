@@ -376,6 +376,13 @@ func getMode(mode Mode) *ModeEncoder {
 	return nil
 }
 
+func (mode Mode) String() string {
+	if m := getMode(mode); m != nil {
+		return m.Name
+	}
+	return strconv.Itoa(int(mode))
+}
+
 // GetMode returns a copy of ModeEncoder for the mode.  It can be used
 // to base the implementation of a new mode on an existing one.
 func GetMode(mode Mode) *ModeEncoder {
@@ -462,6 +469,12 @@ func (e SegmentError) Error() string {
 	return fmt.Sprintf("invalid mode %d", e.Mode)
 }
 
+type ModeError Mode
+
+func (e ModeError) Error() string {
+	return fmt.Sprintf("invalid mode %s", Mode(e))
+}
+
 // isValid reports whether seg is encodable.
 func (m *ModeEncoder) isValid(seg Segment) bool {
 	if f := m.Valid; f != nil {
@@ -508,10 +521,9 @@ func (seg Segment) EncodedLength(class int) int {
 	m := getMode(seg.Mode)
 	if m == nil {
 		return 0
-	} else if seg.Mode <= Byte ||
-		ShiftJISKanji <= seg.Mode && seg.Mode <= StructAppend {
-	} else if m.CutRune != nil {
-		for s, cut := seg.Text, m.CutRune; s != ""; rlen++ {
+	} else if el := m.EncodedLength; el == nil || el(0, 0x100) == 0 {
+	} else if cut := m.CutRune; cut != nil {
+		for s := seg.Text; s != ""; rlen++ {
 			_, sz := cut(s)
 			s = s[sz:]
 		}
@@ -521,34 +533,45 @@ func (seg Segment) EncodedLength(class int) int {
 	return m.length(len(seg.Text), rlen, class)
 }
 
+// transform transforms seg for encoding.  The transformed segment is
+// not validated.  The encoder calls transform prior to encoding.
+func (seg Segment) transform() (Segment, *ModeEncoder, error) {
+	if m := getMode(seg.Mode); m == nil {
+		return Segment{}, nil, ModeError(seg.Mode)
+	} else if m.Transform == nil {
+		return seg, m, nil
+	} else if !m.isValid(seg) {
+		return Segment{}, nil, SegmentError(seg)
+	} else if ts, ok := m.Transform(seg.Text); !ok {
+		return Segment{}, nil, SegmentError(seg)
+	} else if m = getMode(ts.Mode); m == nil || m.Transform != nil {
+		return Segment{}, nil, ModeError(seg.Mode)
+	} else {
+		return ts, m, nil
+	}
+}
+
 // Transform transforms seg for encoding.  The transformed segment is
 // not validated.  The encoder calls Transform prior to encoding.
 func (seg Segment) Transform() (Segment, error) {
 	if seg.Mode < Kanji || seg.Mode == ShiftJISKanji {
 		return seg, nil
-	} else if m := getMode(seg.Mode); m == nil || m.Transform == nil {
-		return seg, nil
-	} else if m.isValid(seg) {
-		if ts, ok := m.Transform(seg.Text); ok {
-			return ts, nil
-		}
 	}
-	return Segment{}, SegmentError(seg)
+	seg, _, err := seg.transform()
+	return seg, err
 }
 
 // Encode writes seg encoded for the given QR version size class to b.
 func (seg Segment) Encode(b *Bits, class int) error {
 	// transform the string
-	var m *ModeEncoder
-	if ts, err := seg.Transform(); err != nil {
+	ts, m, err := seg.transform()
+	if err != nil {
 		return err
-	} else if m = getMode(ts.Mode); m == nil || !m.isValid(ts) {
+	} else if !m.isValid(ts) {
 		return SegmentError(seg)
-	} else {
-		seg = ts
 	}
 	// write header
-	s := seg.Text
+	s := ts.Text
 	b.Write(uint32(m.Indicator), 4)
 	w := len(s)
 	if m.Count != nil {
@@ -581,6 +604,8 @@ func (seg Segment) Encode(b *Bits, class int) error {
 				b.Write(enc1(s[0]))
 				s = s[1:]
 			}
+		} else if s != "" {
+			panic("qr: " + m.Name + " mode internal error")
 		}
 	} else if b.nbit&7 != 0 {
 		for ; len(s) >= 4; s = s[4:] {
@@ -600,9 +625,6 @@ func (seg Segment) Encode(b *Bits, class int) error {
 		b.b = append(b.b, s...)
 		b.nbit += len(s) * 8
 		s = ""
-	}
-	if s != "" {
-		panic("qr: " + m.Name + " mode internal error")
 	}
 	return nil
 }
@@ -958,15 +980,16 @@ func (s *BitStream) Next() byte {
 func (p *Plan) Serialise(s BitStream, bitmap []byte) {
 	siz := p.Size
 	stride := (siz + 7) >> 3
+	pmap := p.Map
 	for x := siz - 2; x >= 0; {
 		// on the way up x%8 is 2, 3 or 7.
 		lx, lb := x>>3, byte(0x80)>>(x&7)
 		rxOff, rb := int(lb&1), byte(0x80)>>((x+1)&7)
 		for off := (siz-1)*stride + lx; off >= 0; off -= stride {
-			if p.Map[off+rxOff]&rb == 0 && s.Next() != 0 {
+			if pmap[off+rxOff]&rb == 0 && s.Next() != 0 {
 				bitmap[off+rxOff] ^= rb
 			}
-			if p.Map[off]&lb == 0 && s.Next() != 0 {
+			if pmap[off]&lb == 0 && s.Next() != 0 {
 				bitmap[off] ^= lb
 			}
 		}
@@ -977,8 +1000,8 @@ func (p *Plan) Serialise(s BitStream, bitmap []byte) {
 		// on the way down x%8 is 0, 1, 4 or 5, thus the
 		// two bits are always in the same byte.
 		shift := 7 &^ (x + 1)
-		for off := lx; off < len(p.Map); off += stride {
-			if m := 3 &^ (p.Map[off] >> shift); m != 0 {
+		for off := lx; off < len(pmap); off += stride {
+			if m := 3 &^ (pmap[off] >> shift); m != 0 {
 				b := s.Next()
 				if m == 3 {
 					b |= s.Next() << 1
@@ -1027,11 +1050,10 @@ func (e *Encoder) Write(text ...Segment) error {
 // xor xors a and b into dst.  a and b may not be shorter than dst.
 // dst and a or b should not overlap unless they are the same slice.
 func xor(dst, a, b []byte) {
-	if len(dst) != 0 {
-		_, _ = a[len(dst)-1], b[len(dst)-1]
-		for i := range dst {
-			dst[i] = a[i] ^ b[i]
-		}
+	a = a[:len(dst)]
+	b = b[:len(dst)]
+	for i := range dst {
+		dst[i] = a[i] ^ b[i]
 	}
 }
 

@@ -171,13 +171,13 @@ func (c *Code) string(inv byte) string {
 
 // Image returns an Image displaying the code.
 func (c *Code) Image() image.Image {
-	return &codeImage{c}
+	return codeImage{c}
 
 }
 
 // Image returns an Image displaying the reversed code.
 func (c Reversed) Image() image.Image {
-	return &reverseImage{codeImage{c.Code}}
+	return reverseImage{codeImage{c.Code}}
 }
 
 // codeImage implements image.Image
@@ -192,33 +192,33 @@ type reverseImage struct {
 
 var palette = color.Palette{color.Black, color.White}
 
-func (c *codeImage) Bounds() image.Rectangle {
+func (c codeImage) Bounds() image.Rectangle {
 	d := (c.Size + 8) * c.Scale
 	return image.Rect(0, 0, d, d)
 }
 
-func (c *codeImage) ColorModel() color.Model {
+func (c codeImage) ColorModel() color.Model {
 	return palette
 }
 
-func (c *codeImage) ColorIndexAt(x, y int) uint8 {
+func (c codeImage) ColorIndexAt(x, y int) uint8 {
 	if c.Black(x/c.Scale-4, y/c.Scale-4) {
 		return 0
 	}
 	return 1
 }
 
-func (c *codeImage) At(x, y int) color.Color {
+func (c codeImage) At(x, y int) color.Color {
 	return palette[c.ColorIndexAt(x, y)]
 }
 
-func (c *reverseImage) ColorIndexAt(x, y int) uint8 {
+func (c reverseImage) ColorIndexAt(x, y int) uint8 {
 	if c.Black(x/c.Scale-4, y/c.Scale-4) {
 		return 1
 	}
 	return 0
 }
 
-func (c *reverseImage) At(x, y int) color.Color {
+func (c reverseImage) At(x, y int) color.Color {
 	return palette[c.ColorIndexAt(x, y)]
 }
