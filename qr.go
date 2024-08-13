@@ -190,10 +190,13 @@ type reverseImage struct {
 	codeImage
 }
 
-var palette = color.Palette{color.Black, color.White}
+var (
+	palette    = color.Palette{color.White, color.Black}
+	revpalette = color.Palette{color.Black, color.White}
+)
 
 func (c codeImage) Bounds() image.Rectangle {
-	d := (c.Size + 8) * c.Scale
+	d := (c.Size + 8) * max(c.Scale, 1)
 	return image.Rect(0, 0, d, d)
 }
 
@@ -201,24 +204,22 @@ func (c codeImage) ColorModel() color.Model {
 	return palette
 }
 
+func (c reverseImage) ColorModel() color.Model {
+	return revpalette
+}
+
 func (c codeImage) ColorIndexAt(x, y int) uint8 {
-	if c.Black(x/c.Scale-4, y/c.Scale-4) {
-		return 0
+	scale := max(c.Scale, 1)
+	if c.Black(x/scale-4, y/scale-4) {
+		return 1
 	}
-	return 1
+	return 0
 }
 
 func (c codeImage) At(x, y int) color.Color {
 	return palette[c.ColorIndexAt(x, y)]
 }
 
-func (c reverseImage) ColorIndexAt(x, y int) uint8 {
-	if c.Black(x/c.Scale-4, y/c.Scale-4) {
-		return 1
-	}
-	return 0
-}
-
 func (c reverseImage) At(x, y int) color.Color {
-	return palette[c.ColorIndexAt(x, y)]
+	return revpalette[c.ColorIndexAt(x, y)]
 }

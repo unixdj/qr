@@ -17,7 +17,7 @@ import (
 //
 // PNG uses a custom encoder tailored to QR codes.
 // Its compressed size is about 4x away from optimal,
-// but it runs about 20x faster than calling png.Encode
+// but it runs about 25x faster than calling png.Encode
 // on c.Image().
 func (c *Code) PNG() []byte {
 	var p pngWriter
@@ -41,7 +41,7 @@ type pngWriter struct {
 var pngHeader = []byte("\x89PNG\r\n\x1a\n")
 
 func (w *pngWriter) encode(c *Code, reverse bool) []byte {
-	scale := c.Scale
+	scale := max(c.Scale, 1)
 	siz := c.Size
 
 	w.buf.Reset()
@@ -102,7 +102,7 @@ func (b *bitWriter) writeCode(c *Code, reverse bool) {
 	b.bytes.Reset()
 	b.nbit = 0
 
-	scale := c.Scale
+	scale := max(c.Scale, 1)
 	siz := c.Size
 
 	// zlib header
@@ -141,27 +141,37 @@ func (b *bitWriter) writeCode(c *Code, reverse bool) {
 		nz := 0
 		for x := -4; x < siz+4; x++ {
 			// Raw data.
-			for i := 0; i < scale; i++ {
-				z <<= 1
-				if c.Black(x, y) == reverse {
-					z |= 1
-				}
-				if nz++; nz == 8 {
-					row[j] = z
+			var bits byte
+			if c.Black(x, y) == reverse {
+				bits = 0xff
+			}
+			if rem := scale; nz+rem < 8 {
+				z = z<<rem | bits>>(8-rem)
+				nz += rem
+			} else {
+				if nz != 0 {
+					row[j] = z<<(8-nz) | bits>>nz
 					j++
-					nz = 0
+					rem -= 8 - nz
+				}
+				z, nz = bits, rem&7
+				for rem /= 8; rem > 0; rem-- {
+					row[j] = bits
+					j++
 				}
 			}
 		}
 		if j < len(row) {
-			row[j] = z
+			row[j] = z << (8 - nz)
 		}
 		for _, z := range row {
 			b.byte(z)
 		}
 
 		// Scale-1 copies.
-		b.repeat((scale-1)*(1+n), 1+n)
+		if scale != 1 {
+			b.repeat((scale-1)*(1+n), 1+n)
+		}
 
 		b.adler32.WriteN(row, scale)
 	}
