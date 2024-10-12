@@ -72,7 +72,7 @@ func EncodeData(data split.Data, level Level) (*Code, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Code{cc.Bitmap, cc.Size, cc.Stride, 8}, nil
+	return &Code{cc.Bitmap, cc.Size, cc.Stride, 8, 4, nil, false}, nil
 }
 
 // EncodeMulti returns an encoding of data split across multiple QR
@@ -95,7 +95,7 @@ func EncodeMulti(header, data split.Data, version coding.Version, level Level) (
 		if err != nil {
 			return nil, err
 		}
-		c[i] = &Code{cc.Bitmap, cc.Size, cc.Stride, 8}
+		c[i] = &Code{cc.Bitmap, cc.Size, cc.Stride, 8, 4, nil, false}
 	}
 	return c, nil
 }
@@ -108,48 +108,43 @@ func EncodeTextMulti(text string, c split.Charset, eci uint32, version coding.Ve
 }
 
 // A Code is a square pixel grid.
-// It implements image.Image and direct PNG encoding.
 type Code struct {
-	Bitmap []byte // 1 is black, 0 is white
-	Size   int    // number of pixels on a side
-	Stride int    // number of bytes per row
-	Scale  int    // number of image pixels per QR pixel
+	Bitmap  []byte          // 1 is black, 0 is white
+	Size    int             // number of pixels on a side
+	Stride  int             // number of bytes per row
+	Scale   int             // number of image pixels per QR pixel
+	Border  int             // number of quiet zone pixels
+	Palette *[2]color.Color // background and foreground colors
+	Reverse bool            // reverse colors
 }
 
 // Black returns true if the pixel at (x,y) is black.
 func (c *Code) Black(x, y int) bool {
-	return 0 <= x && x < c.Size && 0 <= y && y < c.Size &&
-		c.Bitmap[y*c.Stride+x/8]&(1<<uint(7&^x)) != 0
+	var bit byte
+	if c.Reverse {
+		bit = 1
+	}
+	if 0 <= x && x < c.Size {
+		if p := y*c.Stride + x/8; 0 <= p && p < len(c.Bitmap) {
+			bit ^= c.Bitmap[p] >> (7 &^ x)
+		}
+	}
+	return bit&1 != 0
 }
 
-// Reverse returns a code with colors reversed.
-func (c *Code) Reverse() Reversed { return Reversed{c} }
-
-// Reversed is a Code with colors reversed.
-type Reversed struct {
-	*Code
-}
-
-// Black returns true if the original pixel at (x,y) is white.
-func (c Reversed) Black(x, y int) bool { return !c.Code.Black(x, y) }
-
 // String returns a multiline string containing the code for printing
-// on a dark background.
-func (c *Code) String() string { return c.string(0) }
-
-// String returns a multiline string containing the code for printing
-// on a light background.
-func (c Reversed) String() string { return c.string(3) }
-
-func (c *Code) string(inv byte) string {
+// on a dark background.  c.Scale and c.Palette are ignored.
+func (c *Code) String() string {
 	pix := [4]string{"█", "▀", "▄", " "}
 	siz := c.Size
+	bord := max(c.Border, 0)
 	// Allocate 3 bytes per pixel + 1 for newline for each 2 rows.
 	var b strings.Builder
-	xx := siz + 9
+	xx := siz + bord*2 + 1
 	b.Grow(3*xx*xx/2 - xx)
-	for y := -4; y < siz+3; y += 2 {
-		for x := -4; x < siz+4; x++ {
+	var y int
+	for y = -bord; y < siz+bord-1; y += 2 {
+		for x := -bord; x < siz+bord; x++ {
 			var n byte
 			if c.Black(x, y) {
 				n = 2
@@ -157,69 +152,63 @@ func (c *Code) string(inv byte) string {
 			if c.Black(x, y+1) {
 				n++
 			}
-			b.WriteString(pix[(n^inv)&3])
+			b.WriteString(pix[n&3])
 		}
 		b.WriteByte('\n')
 	}
-	s := pix[(inv|1)&3]
-	for x := -4; x < siz+4; x++ {
-		b.WriteString(s)
+	for x := -bord; x < siz+bord; x++ {
+		var n byte = 1
+		if c.Black(x, y) {
+			n = 3
+		}
+		b.WriteString(pix[n&3])
 	}
 	b.WriteByte('\n')
 	return b.String()
 }
 
+type codeImage struct{ *Code }
+
 // Image returns an Image displaying the code.
 func (c *Code) Image() image.Image {
 	return codeImage{c}
-
 }
 
-// Image returns an Image displaying the reversed code.
-func (c Reversed) Image() image.Image {
-	return reverseImage{codeImage{c.Code}}
-}
-
-// codeImage implements image.Image
-type codeImage struct {
-	*Code
-}
-
-// reverseImage implements image.Image
-type reverseImage struct {
-	codeImage
-}
-
-var (
-	palette    = color.Palette{color.White, color.Black}
-	revpalette = color.Palette{color.Black, color.White}
-)
+var palette = [2]color.Color{color.Black, color.White}
 
 func (c codeImage) Bounds() image.Rectangle {
-	d := (c.Size + 8) * max(c.Scale, 1)
+	d := (c.Size + max(c.Border, 0)*2) * max(c.Scale, 1)
 	return image.Rect(0, 0, d, d)
 }
 
-func (c codeImage) ColorModel() color.Model {
-	return palette
+func (c codeImage) palette() *[2]color.Color {
+	if p := c.Palette; p != nil {
+		return p
+	}
+	return &palette
 }
 
-func (c reverseImage) ColorModel() color.Model {
-	return revpalette
+func (c codeImage) ColorModel() color.Model {
+	return color.Palette(c.palette()[:])
 }
 
 func (c codeImage) ColorIndexAt(x, y int) uint8 {
 	scale := max(c.Scale, 1)
-	if c.Black(x/scale-4, y/scale-4) {
-		return 1
+	bord := max(c.Border, 0)
+	if c.Black(x/scale-bord, y/scale-bord) {
+		return 0
 	}
-	return 0
+	return 1
 }
 
 func (c codeImage) At(x, y int) color.Color {
-	return palette[c.ColorIndexAt(x, y)]
+	return c.palette()[c.ColorIndexAt(x, y)]
 }
 
-func (c reverseImage) At(x, y int) color.Color {
-	return revpalette[c.ColorIndexAt(x, y)]
+func (c *Code) isValid() bool {
+	siz := c.Size
+	stride := c.Stride
+	bitmap := c.Bitmap
+	return 20 < siz && siz < 180 && siz&3 == 1 && siz/8+1 == stride &&
+		len(bitmap) == siz*stride && c.Scale > 0 && c.Border >= 0
 }

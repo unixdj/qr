@@ -168,7 +168,7 @@ type ModeEncoder struct {
 	// QR version size classes.
 	CountLength [3]byte
 
-	// EncodedLength returns the encoded length in bits of a valid
+	// EncodedLength returns the encoded data length in bits of a valid
 	// string of the given length in bytes and runes.
 	EncodedLength func(bytes, runes int) int
 
@@ -460,6 +460,7 @@ type Segment struct {
 	Mode Mode   // encoding mode
 }
 
+// SegmentError represents an invalid Segment.
 type SegmentError Segment
 
 func (e SegmentError) Error() string {
@@ -469,6 +470,7 @@ func (e SegmentError) Error() string {
 	return fmt.Sprintf("invalid mode %d", e.Mode)
 }
 
+// ModeError represents an invalid Mode number or ModeEncoder.
 type ModeError Mode
 
 func (e ModeError) Error() string {
@@ -872,8 +874,8 @@ func (b *Bits) padTo(n int) {
 		if len(buf) > 0 {
 			buf[0] = 0xec
 		}
-		b.nbit = len(b.b) * 8
 	}
+	b.nbit = len(b.b) * 8
 }
 
 // PadTo pads b to n*8 bit.
@@ -1124,50 +1126,6 @@ type level struct {
 	check  int
 }
 
-var vtab = []version{
-	{},
-	{100, 100, 26, 0x0, [4]level{{1, 7}, {1, 10}, {1, 13}, {1, 17}}},          // 1
-	{16, 100, 44, 0x0, [4]level{{1, 10}, {1, 16}, {1, 22}, {1, 28}}},          // 2
-	{20, 100, 70, 0x0, [4]level{{1, 15}, {1, 26}, {2, 18}, {2, 22}}},          // 3
-	{24, 100, 100, 0x0, [4]level{{1, 20}, {2, 18}, {2, 26}, {4, 16}}},         // 4
-	{28, 100, 134, 0x0, [4]level{{1, 26}, {2, 24}, {4, 18}, {4, 22}}},         // 5
-	{32, 100, 172, 0x0, [4]level{{2, 18}, {4, 16}, {4, 24}, {4, 28}}},         // 6
-	{20, 16, 196, 0x7c94, [4]level{{2, 20}, {4, 18}, {6, 18}, {5, 26}}},       // 7
-	{22, 18, 242, 0x85bc, [4]level{{2, 24}, {4, 22}, {6, 22}, {6, 26}}},       // 8
-	{24, 20, 292, 0x9a99, [4]level{{2, 30}, {5, 22}, {8, 20}, {8, 24}}},       // 9
-	{26, 22, 346, 0xa4d3, [4]level{{4, 18}, {5, 26}, {8, 24}, {8, 28}}},       // 10
-	{28, 24, 404, 0xbbf6, [4]level{{4, 20}, {5, 30}, {8, 28}, {11, 24}}},      // 11
-	{30, 26, 466, 0xc762, [4]level{{4, 24}, {8, 22}, {10, 26}, {11, 28}}},     // 12
-	{32, 28, 532, 0xd847, [4]level{{4, 26}, {9, 22}, {12, 24}, {16, 22}}},     // 13
-	{24, 20, 581, 0xe60d, [4]level{{4, 30}, {9, 24}, {16, 20}, {16, 24}}},     // 14
-	{24, 22, 655, 0xf928, [4]level{{6, 22}, {10, 24}, {12, 30}, {18, 24}}},    // 15
-	{24, 24, 733, 0x10b78, [4]level{{6, 24}, {10, 28}, {17, 24}, {16, 30}}},   // 16
-	{28, 24, 815, 0x1145d, [4]level{{6, 28}, {11, 28}, {16, 28}, {19, 28}}},   // 17
-	{28, 26, 901, 0x12a17, [4]level{{6, 30}, {13, 26}, {18, 28}, {21, 28}}},   // 18
-	{28, 28, 991, 0x13532, [4]level{{7, 28}, {14, 26}, {21, 26}, {25, 26}}},   // 19
-	{32, 28, 1085, 0x149a6, [4]level{{8, 28}, {16, 26}, {20, 30}, {25, 28}}},  // 20
-	{26, 22, 1156, 0x15683, [4]level{{8, 28}, {17, 26}, {23, 28}, {25, 30}}},  // 21
-	{24, 24, 1258, 0x168c9, [4]level{{9, 28}, {17, 28}, {23, 30}, {34, 24}}},  // 22
-	{28, 24, 1364, 0x177ec, [4]level{{9, 30}, {18, 28}, {25, 30}, {30, 30}}},  // 23
-	{26, 26, 1474, 0x18ec4, [4]level{{10, 30}, {20, 28}, {27, 30}, {32, 30}}}, // 24
-	{30, 26, 1588, 0x191e1, [4]level{{12, 26}, {21, 28}, {29, 30}, {35, 30}}}, // 25
-	{28, 28, 1706, 0x1afab, [4]level{{12, 28}, {23, 28}, {34, 28}, {37, 30}}}, // 26
-	{32, 28, 1828, 0x1b08e, [4]level{{12, 30}, {25, 28}, {34, 30}, {40, 30}}}, // 27
-	{24, 24, 1921, 0x1cc1a, [4]level{{13, 30}, {26, 28}, {35, 30}, {42, 30}}}, // 28
-	{28, 24, 2051, 0x1d33f, [4]level{{14, 30}, {28, 28}, {38, 30}, {45, 30}}}, // 29
-	{24, 26, 2185, 0x1ed75, [4]level{{15, 30}, {29, 28}, {40, 30}, {48, 30}}}, // 30
-	{28, 26, 2323, 0x1f250, [4]level{{16, 30}, {31, 28}, {43, 30}, {51, 30}}}, // 31
-	{32, 26, 2465, 0x209d5, [4]level{{17, 30}, {33, 28}, {45, 30}, {54, 30}}}, // 32
-	{28, 28, 2611, 0x216f0, [4]level{{18, 30}, {35, 28}, {48, 30}, {57, 30}}}, // 33
-	{32, 28, 2761, 0x228ba, [4]level{{19, 30}, {37, 28}, {51, 30}, {60, 30}}}, // 34
-	{28, 24, 2876, 0x2379f, [4]level{{19, 30}, {38, 28}, {53, 30}, {63, 30}}}, // 35
-	{22, 26, 3034, 0x24b0b, [4]level{{20, 30}, {40, 28}, {56, 30}, {66, 30}}}, // 36
-	{26, 26, 3196, 0x2542e, [4]level{{21, 30}, {43, 28}, {59, 30}, {70, 30}}}, // 37
-	{30, 26, 3362, 0x26a64, [4]level{{22, 30}, {45, 28}, {62, 30}, {74, 30}}}, // 38
-	{24, 28, 3532, 0x27541, [4]level{{24, 30}, {47, 28}, {65, 30}, {77, 30}}}, // 39
-	{28, 28, 3706, 0x28c69, [4]level{{25, 30}, {49, 28}, {68, 30}, {81, 30}}}, // 40
-}
-
 func set16(b []byte, bits uint16) {
 	_ = b[1]
 	b[0] |= byte(bits >> 8)
@@ -1281,17 +1239,7 @@ func vplan(v Version, l Level) *Plan {
 // fplan sets the format bits
 func fplan(l Level, mask int, p *Plan) {
 	// Format pixels.
-	fb := uint16(l^1) << 13  // level: L=01, M=00, Q=11, H=10
-	fb |= uint16(mask) << 10 // mask
-	const formatPoly = 0x537
-	rem := fb
-	for i := 4; i >= 0; i-- {
-		if rem&((1<<10)<<i) != 0 {
-			rem ^= formatPoly << i
-		}
-	}
-	fb |= rem
-	fb ^= 0x5412
+	fb := ftab[l][mask]
 	b := p.Pattern[mask]
 	siz := p.Size
 	stride := (siz + 7) >> 3
@@ -1343,20 +1291,26 @@ var maskPat = [8][]uint16{
 // mplan edits a version+level-only Plan to add the mask.
 func mplan(mask int, p *Plan) {
 	stride := (p.Size + 7) >> 3
-	m := p.Map
+	var mpbuf [(MaxVersion*4 + 17 + 7) / 8 * 6]byte // 136 byte array
 	b := p.Pattern[mask]
-	mp := maskPat[mask] // mask patterns
-	r := 0              // row index
-	for len(b) != 0 {
-		var br, mr []byte
-		br, b = b[:stride], b[stride:]
-		mr, m = m[:stride], m[stride:]
-		pb := [3]byte{byte(mp[r] >> 4), byte(mp[r] >> 2), byte(mp[r])}
-		for i, v := range mr {
-			br[i] |= pb[i%3] &^ v
+	m := p.Map[:len(b)]
+	mpx := maskPat[mask] // mask patterns
+	// create a pattern of 1-6 rows (3-136 bytes)
+	for i, v := range mpx {
+		pr := mpbuf[i*stride:][:stride]
+		_ = pr[2]
+		pr[0], pr[1], pr[2] = byte(v>>4), byte(v>>2), byte(v)
+		for n := 3; n < len(pr); n += copy(pr[n:], pr[:n]) {
 		}
-		if r++; r == len(mp) {
-			r = 0
+	}
+	mp := mpbuf[:len(mpx)*stride] // mask pattern
+	// apply mask pattern
+	for len(b) != 0 {
+		ml := min(len(b), len(mp))
+		bb, mm := b[:ml], m[:ml]
+		b, m = b[ml:], m[ml:]
+		for i, v := range mp[:ml] {
+			bb[i] |= v &^ mm[i]
 		}
 	}
 }
