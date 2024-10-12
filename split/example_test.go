@@ -34,7 +34,7 @@ func utf16DecodePair(s string) (rune, int) {
 	return rune(s[0])<<8 | rune(s[1]), 2
 }
 
-// utf16DecodePair decodes a UTF-16BE rune.
+// utf16DecodeRune decodes a UTF-16BE rune.
 func utf16DecodeRune(s string) (rune, int) {
 	r, n := utf16DecodePair(s)
 	if utf16.IsSurrogate(r) {
