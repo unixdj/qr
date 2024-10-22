@@ -3,7 +3,8 @@
 // license that can be found in the LICENSE file.
 
 /*
-Package split splits strings into QR code segments.
+Package split splits strings into QR code segments and data into
+structured append symbols and prepares data for encoding.
 */
 package split // import "github.com/unixdj/qr/split"
 
@@ -47,15 +48,15 @@ ModeList.  Charsets using combinations of predefined Modes are
 documented under UTF8.  Mode encoders can be added using
 coding.AddMode.
 
-	Mode           QR segment mode       Character encoding
-	Numeric        numeric               any ASCII-compatible encoding
-	Alphanumeric   alphanumeric          any ASCII-compatible encoding
-	Byte           byte                  any data
-	Kanji          kanji                 UTF-8
-	Latin1         byte                  UTF-8 input encoded as ISO 8859-1
-	ShiftJISKanji  kanji                 Shift JIS, Shift JISx0213
-	ECI            eci                   N/A
-	StructAppend   structured append     N/A
+	Mode           QR segment mode    Character encoding
+	Numeric        numeric            any ASCII-compatible encoding
+	Alphanumeric   alphanumeric       any ASCII-compatible encoding
+	Byte           byte               any data
+	Kanji          kanji              UTF-8
+	Latin1         byte               UTF-8 input encoded as ISO 8859-1
+	ShiftJISKanji  kanji              Shift JIS, Shift JISx0213
+	ECI            eci                N/A
+	StructAppend   structured append  N/A
 
 Numeric and Alphanumeric accept the respective QR encoding modes'
 character sets.  Byte encodes any string as is.  Latin1 accepts UTF-8
@@ -96,8 +97,9 @@ type Data interface {
 	// by the Splitter's Split method.
 	MinLength() int
 
-	// Splitter returns a Splitter for the data.
-	Splitter() (Splitter, error)
+	// Splitter returns a Splitter and the lowest valid size class
+	// for the data.
+	Splitter() (Splitter, int, error)
 }
 
 /*
@@ -129,85 +131,88 @@ type Result interface {
 }
 
 var (
-	ErrLongHeader   = errors.New("qr: header too long")
-	ErrLongText     = errors.New("qr: text too long")
-	ErrNotEncodable = errors.New("qr: text not encodable in given modes")
-	ErrECI          = errors.New("qr: invalid eci number")
+	ErrArgs       = errors.New("qr: invalid arguments")
+	ErrLongHeader = errors.New("qr: header too long")
+	ErrLongText   = errors.New("qr: text too long")
+	ErrTextMode   = errors.New("qr: text not encodable in given modes")
+	ErrMicro      = errors.New("qr: data not encodable as Micro QR code")
+	ErrECI        = errors.New("qr: invalid eci number")
 )
 
-var (
-	sizeClass = [3]struct{ min, max coding.Version }{
-		{1, 9}, {10, 26}, {27, 40},
-	}
+// A Format represents a code format.
+type Format int
 
-	sizeLimit = [4][3]int{
-		L: {
-			sizeClass[0].max.DataBytes(L) * 8,
-			sizeClass[1].max.DataBytes(L) * 8,
-			sizeClass[2].max.DataBytes(L) * 8,
-		},
-		M: {
-			sizeClass[0].max.DataBytes(M) * 8,
-			sizeClass[1].max.DataBytes(M) * 8,
-			sizeClass[2].max.DataBytes(M) * 8,
-		},
-		Q: {
-			sizeClass[0].max.DataBytes(Q) * 8,
-			sizeClass[1].max.DataBytes(Q) * 8,
-			sizeClass[2].max.DataBytes(Q) * 8,
-		},
-		H: {
-			sizeClass[0].max.DataBytes(H) * 8,
-			sizeClass[1].max.DataBytes(H) * 8,
-			sizeClass[2].max.DataBytes(H) * 8,
-		},
-	}
+// Format values.
+const (
+	QR     Format = iota // QR code
+	Micro                // Micro QR code
+	Either               // Micro QR if data fits, otherwise QR
 )
 
-/*
-Split returns segments and minimum QR code version for data at the
-given error correction level.
+// Valid classes for each Format.
+var classes = [3]struct{ min, max int }{
+	QR:     {coding.Class0, coding.Class2},
+	Micro:  {coding.ClassM1, coding.ClassM4},
+	Either: {coding.ClassM1, coding.Class2},
+}
 
-Using String{Text: text} as data returns parameters for encoding bare
-UTF-8 text.  The Text function constructs Data for common scenarios.
-*/
-func Split(data Data, level coding.Level) ([]coding.Segment, coding.Version, error) {
-	if level < L || level > H {
+// Versions in each size class.
+var sizeClass = [7]struct{ min, max coding.Version }{
+	coding.ClassM1: {coding.M1, coding.M1},
+	coding.ClassM2: {coding.M2, coding.M2},
+	coding.ClassM3: {coding.M3, coding.M3},
+	coding.ClassM4: {coding.M4, coding.M4},
+	coding.Class0:  {1, 9},
+	coding.Class1:  {10, 26},
+	coding.Class2:  {27, 40},
+}
+
+// Split returns segments and minimum code version of the given format
+// for data at the given error correction level.
+//
+// Using String{Text: text} as data returns parameters for encoding
+// bare UTF-8 text.  The Text function constructs Data for other
+// common scenarios.
+func Split(data Data, level coding.Level, format Format) ([]coding.Segment, coding.Version, error) {
+	if format < QR || format > Either {
+		return nil, 0, ErrArgs
+	}
+	if level < L || level > H || level == H && format != QR {
 		return nil, 0, coding.ErrLevel
 	}
-	lim := sizeLimit[level]
-	// Estimate minimum QR version size class.  This is done in a
-	// very crude manner, as it's likely to be completely off anyway.
-	bits := data.MinLength()
-	class := 0
-	for lim[class] < bits {
-		if class++; class == 3 {
-			return nil, 0, ErrLongText
-		}
-	}
 	// Split Strings into spans.
-	sp, err := data.Splitter()
+	sp, class, err := data.Splitter()
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Split data into segments for the size class.
-	r, bits := sp.Split(class)
-	// If data is too big for the size class, increment class
-	// and resplit.  bits will change, hence the loop.
-	for lim[class] < bits {
-		for class++; class < 3 && lim[class] < bits; class++ {
+	cc := classes[format]
+	if class < cc.min {
+		class = cc.min
+	}
+	var r Result
+	// Estimate minimum QR version size class.  This is done in a very
+	// crude manner, as it's likely to be completely off anyway.
+	// After splitting, if data is too big for the size class,
+	// increment class and resplit.  bits will change, hence the loop.
+	bits := data.MinLength()
+	for lim := sizeLimit[level]; ; class++ {
+		for class <= cc.max && lim[class] < bits {
+			class++
 		}
-		if class == 3 {
+		if class > cc.max {
 			return nil, 0, ErrLongText
 		}
-		r, bits = sp.Split(class)
+		// Split data into segments for the size class.
+		if r, bits = sp.Split(class); bits <= lim[class] {
+			break
+		}
 	}
 
 	// Find version in the size class.
 	v := sizeClass[class].min
 	for max := sizeClass[class].max; v < max; {
-		if mid := (v + max) / 2; mid.DataBytes(level)*8 < bits {
+		if mid := (v + max) / 2; mid.DataBits(level) < bits {
 			v = mid + 1
 		} else {
 			max = mid
@@ -251,7 +256,7 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 	if header == nil {
 		header = Null{}
 	}
-	hs, err := header.Splitter()
+	hs, _, err := header.Splitter()
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +264,7 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 	hr, hbits := hs.Split(class)
 
 	// calculate data size per code
-	dsize := ver.DataBytes(level)*8 - sabits - hbits
+	dsize := ver.DataBits(level) - sabits - hbits
 	if dsize < 4 {
 		return nil, ErrLongHeader
 	} else if data.MinLength() > dsize*maxCodes {
@@ -267,7 +272,7 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 	}
 
 	// split data
-	sp, err := data.Splitter()
+	sp, _, err := data.Splitter()
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +337,7 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 type Null struct{}
 
 func (Null) MinLength() int                           { return 0 }
-func (Null) Splitter() (Splitter, error)              { return Null{}, nil }
+func (Null) Splitter() (Splitter, int, error)         { return Null{}, 0, nil }
 func (Null) Split(int) (Result, int)                  { return Null{}, 0 }
 func (Null) SplitTo(int, int) (Result, int, Splitter) { return Null{}, 0, nil }
 
@@ -350,15 +355,18 @@ func (l List) MinLength() int {
 	return n
 }
 
-func (l List) Splitter() (Splitter, error) {
+func (l List) Splitter() (Splitter, int, error) {
 	sl := make(splitList, len(l))
+	var class int
 	for i := range l {
+		var cc int
 		var err error
-		if sl[i].Splitter, err = l[i].Splitter(); err != nil {
-			return nil, err
+		if sl[i].Splitter, cc, err = l[i].Splitter(); err != nil {
+			return nil, 0, err
 		}
+		class = max(class, cc)
 	}
-	return sl, nil
+	return sl, class, nil
 }
 
 // splitList is a Splitter containing Splitters and a Result
@@ -425,12 +433,15 @@ type Segment struct {
 	Mode coding.Mode
 }
 
-func (seg Segment) Splitter() (Splitter, error) { return seg, nil }
-func (seg Segment) Len() int                    { return 1 }
-
 func (seg Segment) MinLength() int {
 	return seg.Mode.Length(len(seg.Text), 0, 0)
 }
+
+func (seg Segment) Splitter() (Splitter, int, error) {
+	return seg, seg.Mode.MinClass(), nil
+}
+
+func (seg Segment) Len() int { return 1 }
 
 // Split returns seg and its encoded length at the given QR version
 // size class.
@@ -536,6 +547,7 @@ type (
 	sSplitter struct {
 		sResult        // string and split result
 		sp      []span // spans
+		class   [4]int // lowest classes for modes
 		rm      []byte // rune map of the string for SplitTo
 	}
 
@@ -548,11 +560,11 @@ type (
 
 // Splitter returns a Splitter calculating an optimal split for s.
 // If s is not encodable, Splitter returns an error.
-func (s String) Splitter() (Splitter, error) {
+func (s String) Splitter() (Splitter, int, error) {
 	if s.Text == "" {
-		return Null{}, nil
+		return Null{}, 0, nil
 	} else if len(s.Text) >= 1<<32 {
-		return nil, ErrLongText
+		return nil, 0, ErrLongText
 	}
 
 	// Get the Classifier function for the modes.
@@ -561,9 +573,11 @@ func (s String) Splitter() (Splitter, error) {
 	}
 	classify, list, hier := s.Charset.Classifier()
 	var mask byte
+	var class [4]int
 	for i, v := range list {
 		if v >= 0 {
 			mask |= 1 << i
+			class[i] = v.MinClass()
 		}
 	}
 
@@ -571,14 +585,14 @@ func (s String) Splitter() (Splitter, error) {
 	var (
 		n, sz  int
 		modes  = make([]byte, len(s.Text))
-		common = hier
+		common = mask
 		m, all byte
 	)
 	for i := 0; i < len(s.Text); i += sz {
 		old := m
 		m, sz = classify(s.Text[i:])
 		if m &= mask; m == 0 {
-			return nil, ErrNotEncodable
+			return nil, 0, ErrTextMode
 		}
 		modes[i] = m
 		if m != old {
@@ -589,6 +603,12 @@ func (s String) Splitter() (Splitter, error) {
 			}
 		}
 	}
+	minc := coding.ClassM3
+	for c := common; c != 0; c &= c - 1 {
+		bit := c & -c
+		minc = min(minc, class[bit>>1-bit>>3])
+	}
+	common &= hier
 	if latin1HackScan && list[Byte] == Latin1 && (common != byteMode ||
 		all&kanjiMode != 0 && latin1NeedKanji(modes, hier)) {
 		hier &^= kanjiMode // hack, see latin1HackMask
@@ -628,7 +648,7 @@ func (s String) Splitter() (Splitter, error) {
 	sp[n].len = uint32(len(modes)) - start
 	sp = sp[:n+1]
 
-	return &sSplitter{sResult: sResult{s: s.Text}, sp: sp, rm: modes}, nil
+	return &sSplitter{sResult{s: s.Text}, sp, class, modes}, minc, nil
 }
 
 // isRuneMode reports whether the mode's EncodedLength is rune-based.
@@ -662,7 +682,7 @@ func (seg *segment) set(next *segment, len, rlen uint32, class int) {
 
 // add adds v to the split before/after next, returning a pointer to
 // the segment with the smallest encoded length.
-func (v *span) add(next *span, class int) *segment {
+func (v *span) add(next *span, class int, mask byte) *segment {
 	const (
 		minHeader = 4 + 8
 		maxHeader = 4 + 16
@@ -673,6 +693,9 @@ func (v *span) add(next *span, class int) *segment {
 		nbest = next.best
 	}
 	for j := range v.seg {
+		if 1<<j&mask == 0 {
+			continue
+		}
 		seg := &v.seg[j]
 		if seg.mode < 0 {
 			continue
@@ -705,10 +728,19 @@ func (v *span) add(next *span, class int) *segment {
 }
 
 func (s *sSplitter) Split(class int) (Result, int) {
+	mask := byte(0xff)
+	if class < coding.ClassM3 {
+		mask = 0
+		for i, m := range s.class {
+			if m <= class {
+				mask |= 1 << i
+			}
+		}
+	}
 	// process spans in reverse order
 	var next *span
 	for i := len(s.sp) - 1; i >= 0; i-- {
-		s.sp[i].add(next, class)
+		s.sp[i].add(next, class, mask)
 		next = &s.sp[i]
 	}
 	s.head = s.sp[0].best
@@ -723,7 +755,7 @@ func (s *sSplitter) splitOver(lim uint32, class int) int {
 	var i int
 	// process spans in forward order
 	for i = range s.sp {
-		if lim < s.sp[i].add(prev, class).bits {
+		if lim < s.sp[i].add(prev, class, 0xff).bits {
 			break
 		}
 		prev = &s.sp[i]
@@ -846,7 +878,7 @@ func (s *sSplitter) SplitTo(lim, class int) (Result, int, Splitter) {
 	this.len, this.rlen = b, r
 	for this.rlen < sr {
 		// as long as split fits in lim, advance
-		if ll < this.add(prev, class).bits {
+		if ll < this.add(prev, class, 0xff).bits {
 			break
 		}
 		b, r, seg = this.len, this.rlen, *this.best
@@ -868,8 +900,8 @@ func (s *sSplitter) SplitTo(lim, class int) (Result, int, Splitter) {
 				break
 			}
 			this.len, this.rlen = b, r
-			if last := this.add(prev, class); last.bits <= ll {
-				seg = *last
+			if l := this.add(prev, class, 0xff); l.bits <= ll {
+				seg = *l
 				break
 			}
 		}
@@ -992,6 +1024,7 @@ type Charset interface {
 //	K  0x40  first byte of Kanji (maybe)       check kanji
 //	L  0x20  first byte of Latin-1             Latin1: set byte mode
 //	-  0x10  unset
+//	-  0x08  kanji mode (always unset)
 //	b  0x04  byte mode (always set)
 //	a  0x02  alphanumeric mode
 //	n  0x01  numeric mode
@@ -1205,7 +1238,6 @@ func latin1NeedKanji(modes []byte, hier byte) bool {
 		}
 		old = v
 	}
-	println("hier:", need)
 	return need
 }
 
@@ -1270,13 +1302,14 @@ func (c *charset) classify(s string) (byte, int) {
 
 // Extended Channel Interpretation assignment numbers.
 const (
+	NoECI       = -1  // No ECI segment
 	Latin1ECI   = 3   // ISO 8859-1
 	ShiftJISECI = 20  // Shift JIS
 	UTF8ECI     = 26  // UTF-8
 	BinaryECI   = 899 // 8-bit binary data
 )
 
-func setECI(eci uint32) (Data, bool) {
+func setECI(eci int) (Data, bool) {
 	// pre-allocated strings for standard values
 	const s = "\x01\x02\x03\x04\x05\x06\x07\x08" +
 		"\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10" +
@@ -1287,9 +1320,9 @@ func setECI(eci uint32) (Data, bool) {
 	const s899 = "\x83\x83" // 8-bit binary data
 	seg, ok := Segment{Mode: ECI}, true
 	switch {
-	case eci == 0:
+	case eci < 0:
 		return Null{}, true
-	case int(eci) <= len(s):
+	case 0 < eci && eci <= len(s):
 		seg.Text = s[eci-1 : eci]
 	case eci == 170:
 		seg.Text = s170
@@ -1310,8 +1343,8 @@ func setECI(eci uint32) (Data, bool) {
 
 // SetECI returns an ECI Mode Segment setting the Extended Channel
 // Interpretation assignment number to eci.  It returns a Null if eci
-// is 0 and an error if it's equal to or greater than 1<<21.
-func SetECI(eci uint32) (Data, error) {
+// is negative and an error if it's equal to or greater than 1<<21.
+func SetECI(eci int) (Data, error) {
 	if seg, ok := setECI(eci); ok {
 		return seg, nil
 	}
@@ -1319,7 +1352,7 @@ func SetECI(eci uint32) (Data, error) {
 }
 
 // MustSetECI is like SetECI but panics on error.
-func MustSetECI(eci uint32) Data {
+func MustSetECI(eci int) Data {
 	if seg, ok := setECI(eci); ok {
 		return seg
 	}
@@ -1328,14 +1361,14 @@ func MustSetECI(eci uint32) Data {
 
 // ShouldSetECI is like SetECI but returns an unencodable Segment on
 // error.
-func ShouldSetECI(eci uint32) Data {
+func ShouldSetECI(eci int) Data {
 	seg, _ := setECI(eci)
 	return seg
 }
 
 // Text returns a List containing an ECI Mode Segment and a String.
 // If eci is 0, only the String is returned.
-func Text(text string, c Charset, eci uint32) Data {
+func Text(text string, c Charset, eci int) Data {
 	var d Data = String{Text: text, Charset: c}
 	if eci != 0 {
 		d = List{ShouldSetECI(eci), d}

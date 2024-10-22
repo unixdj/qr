@@ -3,7 +3,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package coding implements low-level QR coding details.
+// Package coding implements low-level QR and Micro QR coding details.
 package coding // import "github.com/unixdj/qr/coding"
 
 import (
@@ -29,36 +29,72 @@ var Field = gf256.NewField(0x11d, 2)
 
 // A Version represents a QR version.
 // The version specifies the size of the QR code:
-// a QR code with version v has 4v+17 pixels on a side.
-// Versions number from 1 to 40: the larger the version,
-// the more information the code can store.
+// a QR code with version v has 4v+17 pixels on a side,
+// a Micro QR code with version Mv 2v+9 pixels.
+// Versions run in two sequences, from M1 to M4 and from 1 to 40:
+// the larger the version, the more information the code can store.
 type Version int
 
-const MinVersion = 1
-const MaxVersion = 40
+// Code versions.
+const (
+	// Micro QR versions
+	M1 Version = MaxVersion + 1 + iota
+	M2
+	M3
+	M4
+
+	MinVersion Version = 1  // Minimum QR version
+	MaxVersion Version = 40 // Maximum QR version
+)
 
 func (v Version) String() string {
+	if v >= M1 {
+		return []string{"M1", "M2", "M3", "M4"}[v-M1]
+	}
 	return strconv.Itoa(int(v))
 }
 
-// SizeClass returns the size class of v.  The size class if 0 for
-// versions 1 to 9, 1 for 10 to 26 and 2 for 27 to 40.
+// Micro QR and QR version size classes.
+const (
+	ClassM1 = iota // Micro QR version M1
+	ClassM2        // Micro QR version M2
+	ClassM3        // Micro QR version M3
+	ClassM4        // Micro QR version M4
+	Class0         // QR versions 1 to 9
+	Class1         // QR versions 10 to 26
+	Class2         // QR versions 27 to 40
+)
+
+// SizeClass returns the size class of v, as documented under ClassM1.
 func (v Version) SizeClass() int {
 	if v <= 9 {
-		return 0
+		return Class0
 	}
 	if v <= 26 {
-		return 1
+		return Class1
 	}
-	return 2
+	if v <= 40 {
+		return Class2
+	}
+	return int(v - M1)
 }
 
-// DataBytes returns the number of data bytes that can be
+// dataBytes returns the number of data bytes that can be
 // stored in a QR code with the given version and level.
-func (v Version) DataBytes(l Level) int {
+func (v Version) dataBytes(l Level) int {
 	vt := &vtab[v]
 	lev := vt.level[l]
 	return vt.bytes - lev.nblock*lev.check
+}
+
+// DataBits returns the number of data bits that can be
+// stored in a QR code with the given version and level.
+func (v Version) DataBits(l Level) int {
+	n := v.dataBytes(l) * 8
+	if v >= M1 && n != 0 {
+		n -= int(v) & 1 << 2
+	}
+	return n
 }
 
 type Bits struct {
@@ -150,23 +186,25 @@ type Mode int16
 // ModeEncoder implements a QR segment encoding.
 //
 // The segment is validated using either Valid or CutRune and Accepts.
-// Text mode encoders must have a Transform function returning a
-// Numeric, Alphanumeric, Byte or ShiftJISKanji mode segment.  If set,
-// it is called by Segment.Transform after validation.  The encoder
-// calls Segment.Transform and validates the returned segment before
-// encoding.
+// Text mode encoders other than Numeric, Alphanumeric, Byte and
+// ShiftJISKanji must have a Transform function returning a segment of
+// one of those modes.  If set, it is called by Segment.Transform
+// after validation.  The encoder calls Segment.Transform and
+// validates the returned segment before encoding.
 //
-// Package split uses CutRune, Accepts, EncodedLength and CountLength
-// to split text into segments, and Transform for calculating the
-// checksum when splitting input into multiple QR codes (Structured
-// Append).
+// Package split uses Indicator to determine valid Micro QR versions;
+// CutRune, Accepts, EncodedLength and CountLength to split text into
+// segments; and Transform for calculating the checksum when splitting
+// input into multiple QR codes (Structured Append).
+//
+// Name, Indicator and CountLength must be set.
 type ModeEncoder struct {
 	Name      string // Name for error reporting
-	Indicator byte   // 4 bit mode indicator
+	Indicator byte   // 4 bit mode indicator for QR codes
 
-	// CountLength lists lengths of the character count field in three
-	// QR version size classes.
-	CountLength [3]byte
+	// CountLength lists lengths of the character count field in four
+	// Micro QR and three QR version size classes.
+	CountLength [7]byte
 
 	// EncodedLength returns the encoded data length in bits of a valid
 	// string of the given length in bytes and runes.
@@ -261,7 +299,7 @@ var _stdmodes = []ModeEncoder{
 	Numeric: {
 		Name:          "numeric",
 		Indicator:     1,
-		CountLength:   [3]byte{10, 12, 14},
+		CountLength:   [7]byte{3, 4, 5, 6, 10, 12, 14},
 		EncodedLength: func(b, r int) int { return (10*b + 2) / 3 },
 		Accepts:       func(r rune) bool { return uint32(r-'0') < 10 },
 		Encode1: func(b byte) (uint32, int) {
@@ -278,7 +316,7 @@ var _stdmodes = []ModeEncoder{
 	Alphanumeric: {
 		Name:          "alphanumeric",
 		Indicator:     2,
-		CountLength:   [3]byte{9, 11, 13},
+		CountLength:   [7]byte{0, 3, 4, 5, 9, 11, 13},
 		EncodedLength: func(b, r int) int { return (11*b + 1) / 2 },
 		Accepts: func(r rune) bool {
 			return alphamask>>(uint32(r)-' ')&1 != 0
@@ -294,11 +332,12 @@ var _stdmodes = []ModeEncoder{
 	Byte: {
 		Name:        "byte",
 		Indicator:   4,
-		CountLength: [3]byte{8, 16, 16},
+		CountLength: [7]byte{0, 0, 4, 5, 8, 16, 16},
 	},
 	Kanji: {
 		Name:          "kanji",
-		CountLength:   [3]byte{8, 10, 12},
+		Indicator:     8,
+		CountLength:   [7]byte{0, 0, 3, 4, 8, 10, 12},
 		EncodedLength: func(b, r int) int { return r * 13 },
 		Accepts:       IsKanji,
 		Transform: func(s string) (Segment, bool) {
@@ -308,7 +347,8 @@ var _stdmodes = []ModeEncoder{
 	},
 	Latin1: {
 		Name:          "latin-1",
-		CountLength:   [3]byte{8, 16, 16},
+		Indicator:     4,
+		CountLength:   [7]byte{0, 0, 4, 5, 8, 16, 16},
 		EncodedLength: func(b, r int) int { return r * 8 },
 		Accepts:       func(r rune) bool { return uint32(r) < 0x100 },
 		Transform: func(s string) (Segment, bool) {
@@ -319,7 +359,7 @@ var _stdmodes = []ModeEncoder{
 	ShiftJISKanji: {
 		Name:          "shift-jis-kanji",
 		Indicator:     8,
-		CountLength:   [3]byte{8, 10, 12},
+		CountLength:   [7]byte{0, 0, 3, 4, 8, 10, 12},
 		EncodedLength: func(b, r int) int { return b >> 1 * 13 },
 		Count:         func(s string) int { return len(s) >> 1 },
 		CutRune: func(s string) (rune, int) {
@@ -407,6 +447,16 @@ func AddMode(m *ModeEncoder) Mode {
 	return mode
 }
 
+// MinClass returns the lowest valid version size class for mode.
+func (mode Mode) MinClass() int {
+	if m := getMode(mode); m != nil {
+		if ind := m.Indicator; ind&(ind-1) == 0 {
+			return int(min(ind-1, ClassM3))
+		}
+	}
+	return Class0
+}
+
 type (
 	CutRuneFunc func(string) (rune, int) // Used in ModeEncoder.
 	AcceptsFunc func(rune) bool          // Used in ModeEncoder.
@@ -424,10 +474,9 @@ func (mode Mode) RuneFilter() (CutRuneFunc, AcceptsFunc) {
 
 // length returns the length in bits of a valid string of the given
 // length in bytes and runes encoded in mode at the given QR version
-// size class, including the header.  Length returns 0 if and only if
-// mode is invalid.
-func (m *ModeEncoder) length(bytes, runes int, class int) int {
-	n := 4 + int(m.CountLength[class])
+// size class, including the header.
+func (m *ModeEncoder) length(bytes, runes, class int) int {
+	n := min(class, 4) + int(m.CountLength[class])
 	if f := m.EncodedLength; f != nil {
 		n += f(bytes, runes)
 	} else {
@@ -465,16 +514,27 @@ type SegmentError Segment
 
 func (e SegmentError) Error() string {
 	if m := getMode(e.Mode); m != nil {
-		return fmt.Sprintf("non-%s string %#q", m.Name, e.Text)
+		return fmt.Sprintf("qr: non-%s string %#q", m.Name, e.Text)
 	}
-	return fmt.Sprintf("invalid mode %d", e.Mode)
+	return fmt.Sprintf("qr: invalid mode %d", e.Mode)
 }
 
 // ModeError represents an invalid Mode number or ModeEncoder.
 type ModeError Mode
 
 func (e ModeError) Error() string {
-	return fmt.Sprintf("invalid mode %s", Mode(e))
+	return fmt.Sprintf("qr: invalid mode %s", Mode(e))
+}
+
+// CompatError represents an incompatibility between Mode and Version.
+type CompatError struct {
+	Mode
+	Version
+}
+
+func (e CompatError) Error() string {
+	return fmt.Sprintf("qr: mode %s not encodable in version %s",
+		e.Mode, e.Version)
 }
 
 // isValid reports whether seg is encodable.
@@ -574,7 +634,17 @@ func (seg Segment) Encode(b *Bits, class int) error {
 	}
 	// write header
 	s := ts.Text
-	b.Write(uint32(m.Indicator), 4)
+	ind := uint32(m.Indicator)
+	ilen := 4
+	if class < 4 {
+		ilen = class
+		ii := ind>>1 - ind>>3
+		if ind&(ind-1) != 0 || ii >= 1<<ilen {
+			return CompatError{seg.Mode, Version(class) + M1}
+		}
+		ind = ii
+	}
+	b.Write(ind, ilen)
 	w := len(s)
 	if m.Count != nil {
 		w = m.Count(s)
@@ -661,9 +731,33 @@ func (c *Code) Black(x, y int) bool {
 		c.Bitmap[y*c.Stride+x/8]&(1<<uint(7&^x)) != 0
 }
 
-// Penalty returns the penalty value for c.  The penalty is used for
-// choosing the mask for the code.
+// Penalty returns the penalty value for a QR code, or the negative
+// evaluation score for a Micro QR code.  The value is used for
+// choosing the mask.
 func (c *Code) Penalty() int {
+	siz, stride := c.Size, c.Stride
+	bm := c.Bitmap
+
+	if siz < 20 {
+		// Micro QR code evaluation score: min(v,h)*16+max(v,h)
+		//   v = number of dark modules in right side edge
+		//   h = number of dark modules in lower side edge
+		// v and h exclude timing modules.
+		var v, h, shift = 0, 1, -siz & 7
+		for i := stride*2 - 1; i < len(bm); i += stride {
+			v -= int(bm[i] >> shift & 1)
+		}
+		for _, b := range bm[len(bm)-stride:] {
+			for ; b != 0; b &= b - 1 {
+				h--
+			}
+		}
+		if h < v {
+			h, v = v, h
+		}
+		return h<<4 + v
+	}
+
 	// Total penalty is the sum of penalties for runs and boxes
 	// of same-colour pixels, finder patterns and colour balance.
 	//
@@ -693,12 +787,10 @@ func (c *Code) Penalty() int {
 		LoseB = ^FindB &^ (1<<pShift - 1)          // inverted FindB
 		LoseA = ^FindA &^ (1<<pShift - 1)          // inverted FindA
 	)
+
 	p := 0   // total penalty
 	bal := 0 // black pixels (shifted left 4)
-	siz, stride := c.Size, c.Stride
-
 	// horizontal runs: RunP, FindP, BoxP and count black pixels for BalP
-	bm := c.Bitmap
 	var line, prev []byte
 	for len(bm) >= stride {
 		prev, line, bm = line, bm[:stride], bm[stride:]
@@ -801,8 +893,8 @@ type Plan struct {
 	Version Version // QR code version
 	Level   Level   // QR error correction Level
 
-	DataBytes int // number of data bytes
-	Size      int // number of pixels on a side
+	DataBits int // number of data bits
+	Size     int // number of pixels on a side
 
 	Map     []byte    // pixel map: 0 is data or checksum, 1 is other
 	Pattern [8][]byte // position and alignment boxes, timing, format, mask
@@ -821,34 +913,46 @@ func NewPlan(version Version, level Level) (*Plan, error) {
 	p.Map, bitmap = bitmap[:siz], bitmap[siz:]
 	for i := range p.Pattern {
 		p.Pattern[i], bitmap = bitmap[:siz], bitmap[siz:]
+		if len(bitmap) == 0 {
+			break
+		}
 	}
 	return &p, nil
 }
 
 // Pre-allocated Plans.  A Plan is created the first time a
 // combination of version and level is used.  Each plan is 13 words
-// plus a bitmap the size of 9 Code bitmaps, from 567 bytes for
-// version 1 to 36 KB for version 40.
-var plans [MaxVersion - MinVersion + 1][H - L + 1]struct {
+// plus a bitmap the size of 9 Code bitmaps (5 for Micro QR), from 567
+// bytes for version 1 to 36 KB for version 40 and from 110 bytes for
+// M1 to 255 bytes for M4.
+var plans [M4 + 1][H + 1]struct {
 	once sync.Once
 	p    *Plan
 }
 
-// makePlan returns plans[version-MinVersion][level].
+// makePlan returns plans[version][level].
 // If it doesn't exist, it is created.
 func makePlan(version Version, level Level) (*Plan, error) {
-	if version < MinVersion || version > MaxVersion {
+	if version < MinVersion || version > M4 {
 		return nil, ErrVersion
 	}
-	if level < L || level > H {
+	if level < L || level > H ||
+		version >= M1 && version.dataBytes(level) == 0 {
 		return nil, ErrLevel
 	}
-	p := &plans[version-MinVersion][level]
+	p := &plans[version][level]
 	if p.p == nil {
 		p.once.Do(func() {
 			pp := vplan(version, level)
-			for mask := 0; mask < 8; mask++ {
-				fplan(level, mask, pp)
+			var fb []uint16
+			if version < M1 {
+				fb = ftab[level][:]
+			} else {
+				i := max(version<<1-(M1*2+1)+Version(level), 0)
+				fb = mftab[i][:]
+			}
+			for mask, v := range fb {
+				fplan(v, mask, pp)
 				mplan(mask, pp)
 			}
 			p.p = pp
@@ -857,16 +961,15 @@ func makePlan(version Version, level Level) (*Plan, error) {
 	return p.p, nil
 }
 
-func (b *Bits) padTo(n int) {
-	if len(b.b) <= n {
-		buf := b.b[len(b.b):n]
-		b.b = b.b[:n]
-		// add zero bits: 4 for end mode segment, 0-7 to pad byte.
-		// i.e., if 0-3 bits remain in current byte, add a byte.
-		if len(buf) > 0 && -b.nbit&4 == 0 {
-			buf[0] = 0
-			buf = buf[1:]
-		}
+func (b *Bits) padTo(t, n int) {
+	b.nbit = min(b.nbit+t, n)
+	for len(b.b)*8 < b.nbit {
+		b.b = append(b.b, 0)
+	}
+	if len(b.b) < (n+7)>>3 {
+		buf := b.b[len(b.b) : n>>3]
+		b.b = b.b[:(n+7)>>3]
+		b.b[len(b.b)-1] = 0
 		for len(buf) >= 2 {
 			buf[0], buf[1] = 0xec, 0x11
 			buf = buf[2:]
@@ -878,22 +981,27 @@ func (b *Bits) padTo(n int) {
 	b.nbit = len(b.b) * 8
 }
 
-// PadTo pads b to n*8 bit.
-func (b *Bits) PadTo(n int) {
+// PadTo adds up to t terminator bits to b and pads it to n bit.
+func (b *Bits) PadTo(t, n int) {
 	b.growTo(n)
-	b.padTo(n)
+	b.padTo(t, n)
 }
 
-// AddCheckBytes adds padding and checksum to b for the given QR
-// version and level.
+// AddCheckBytes adds terminator, padding and checksum to b for the
+// given QR version and level.
 func (b *Bits) AddCheckBytes(v Version, l Level) {
-	nd := v.DataBytes(l)
-	if b.nbit > nd*8 {
+	nb := v.DataBits(l)
+	if b.nbit > nb {
 		panic("qr: too much data")
 	}
 	vt := &vtab[v]
 	b.growTo(vt.bytes)
-	b.padTo(nd)
+	nt := 4
+	if v >= M1 {
+		nt = int(v*2 - M1*2 + 3)
+	}
+	b.padTo(nt, nb)
+	nd := (nb + 4) >> 3
 
 	dat := b.Bytes()
 	lev := vt.level[l]
@@ -910,6 +1018,13 @@ func (b *Bits) AddCheckBytes(v Version, l Level) {
 
 	if len(b.Bytes()) != vt.bytes {
 		panic("qr: internal error")
+	}
+	if nb&4 != 0 {
+		chk := b.b[nb>>3:]
+		for i := range chk[:len(chk)-1] {
+			chk[i] |= chk[i+1] >> 4
+			chk[i+1] <<= 4
+		}
 	}
 }
 
@@ -948,7 +1063,7 @@ func (b *Bits) Permute(v Version, l Level) BitStream {
 		} else {
 			dst = src[len(src) : len(src)*2]
 		}
-		nd := v.DataBytes(l)
+		nd := v.dataBytes(l)
 		interleave(dst[:nd], src[:nd], nblock)
 		interleave(dst[nd:], src[nd:], nblock)
 	}
@@ -984,7 +1099,6 @@ func (p *Plan) Serialise(s BitStream, bitmap []byte) {
 	stride := (siz + 7) >> 3
 	pmap := p.Map
 	for x := siz - 2; x >= 0; {
-		// on the way up x%8 is 2, 3 or 7.
 		lx, lb := x>>3, byte(0x80)>>(x&7)
 		rxOff, rb := int(lb&1), byte(0x80)>>((x+1)&7)
 		for off := (siz-1)*stride + lx; off >= 0; off -= stride {
@@ -996,23 +1110,19 @@ func (p *Plan) Serialise(s BitStream, bitmap []byte) {
 			}
 		}
 		x -= 2
-		if x == 5 { // vertical timing strip
+		if x == 5 && siz > 20 { // vertical timing strip
 			x--
+		} else if x < 0 {
+			return
 		}
-		// on the way down x%8 is 0, 1, 4 or 5, thus the
-		// two bits are always in the same byte.
-		shift := 7 &^ (x + 1)
+		lx, lb = x>>3, byte(0x80)>>(x&7)
+		rxOff, rb = int(lb&1), byte(0x80)>>((x+1)&7)
 		for off := lx; off < len(pmap); off += stride {
-			if m := 3 &^ (pmap[off] >> shift); m != 0 {
-				b := s.Next()
-				if m == 3 {
-					b |= s.Next() << 1
-				} else {
-					b *= m
-				}
-				if b != 0 {
-					bitmap[off] ^= b << shift
-				}
+			if pmap[off+rxOff]&rb == 0 && s.Next() != 0 {
+				bitmap[off+rxOff] ^= rb
+			}
+			if pmap[off]&lb == 0 && s.Next() != 0 {
+				bitmap[off] ^= lb
 			}
 		}
 		x -= 2
@@ -1063,9 +1173,9 @@ func (e *Encoder) Reset() { e.b.Reset() }
 
 // Code returns a QR code containing data written to e.
 func (e *Encoder) Code() (*Code, error) {
-	if e.b.Bits() > e.p.DataBytes*8 {
+	if e.b.Bits() > e.p.DataBits {
 		return nil, fmt.Errorf("cannot encode %d bits into %d-bit code",
-			e.b.Bits(), e.p.DataBytes*8)
+			e.b.Bits(), e.p.DataBits)
 	}
 	e.b.AddCheckBytes(e.p.Version, e.p.Level)
 	bits := e.b.Permute(e.p.Version, e.p.Level)
@@ -1080,9 +1190,12 @@ func (e *Encoder) Code() (*Code, error) {
 	c := &Code{Size: siz, Stride: stride, Bitmap: make([]byte, len(data))}
 	best := make([]byte, len(data)) // best bitmap so far
 	pen := 1 << 30                  // largest penalty is < 1<<20
-	for i := range e.p.Pattern {
+	for _, v := range e.p.Pattern {
+		if len(v) == 0 {
+			break
+		}
 		// set bitmap to data bits xor plan bits
-		xor(c.Bitmap, data, e.p.Pattern[i])
+		xor(c.Bitmap, data, v)
 		if p := c.Penalty(); p < pen {
 			best, pen, c.Bitmap = c.Bitmap, p, best
 		}
@@ -1135,33 +1248,50 @@ func set16(b []byte, bits uint16) {
 // vplan creates a Plan for the given version.
 func vplan(v Version, l Level) *Plan {
 	info := &vtab[v]
-	lev := info.level[l]
 	p := &Plan{
-		Version:   v,
-		Level:     l,
-		DataBytes: info.bytes - lev.check*lev.nblock,
+		Version:  v,
+		Level:    l,
+		DataBits: v.DataBits(l),
 	}
-	siz := 17 + int(v)*4
+	var siz int
+	masks := 8
+	µ := v >= M1
+	if !µ {
+		siz = int(v*4 + 17)
+	} else {
+		siz = int(v*2 - M1*2 + 11)
+		masks = 4
+	}
 	stride := (siz + 7) >> 3
 	p.Size = siz
-	bitmap := make([]byte, stride*siz*9)
+	bitmap := make([]byte, stride*siz*(masks+1))
 	p.Map, bitmap = bitmap[:stride*siz], bitmap[stride*siz:]
 	p.Pattern[0] = bitmap
 
 	// Timing markers (overwritten by boxes).
 	// Vertical.  Mask ends of rows.
-	mpat := uint16(0xffff) >> (p.Size & 7) & 0xff02
+	tdot := byte(0x02)
+	if µ {
+		tdot = 0x80
+	}
+	mpat := uint16(0xffff) >> (p.Size & 7) & (0xff00 | uint16(tdot))
 	for n := stride - 1; n+1 < len(p.Map); n += stride {
 		set16(p.Map[n:], mpat)
 		n += stride
 		set16(p.Map[n:], mpat)
-		bitmap[n+1] = 0x02
+		bitmap[n+1] = tdot
 	}
 	p.Map[len(p.Map)-1] = byte(mpat >> 8)
 	// Horizontal.
-	for n := stride*6 + 1; n < stride*7-1; n++ {
-		p.Map[n] = 0xff
-		bitmap[n] = 0xaa
+	if µ {
+		p.Map[1] = 0xff
+		p.Map[2] = 0xff
+		set16(bitmap[1:], 0xaaaa&^(0xffff>>(siz-8)))
+	} else {
+		for n := stride*6 + 1; n < stride*7-1; n++ {
+			p.Map[n] = 0xff
+			bitmap[n] = 0xaa
+		}
 	}
 
 	// Position boxes.
@@ -1171,18 +1301,22 @@ func vplan(v Version, l Level) *Plan {
 	lpat := uint64(0xfe82bababa82fe)
 	mpat = 0x1fe << shift
 	for i, s, e := 0, 0, len(p.Map)-stride; ; i++ {
-		set16(p.Map[s:], 0xff80)   // top left
-		set16(p.Map[s+off:], mpat) // top right
-		if i == 8 {
-			break
+		set16(p.Map[s:], 0xff80) // top left
+		if !µ {
+			set16(p.Map[s+off:], mpat) // top right
+			if i == 8 {
+				break
+			}
+			set16(p.Map[e:], 0xff80) // bottom left
+			bitmap[e] = byte(lpat)
+			set16(bitmap[s+off:], uint16(lpat&0xff)<<shift)
+			e -= stride
+		} else if i == 8 {
+			goto End
 		}
-		set16(p.Map[e:], 0xff80) // bottom left
 		bitmap[s] = byte(lpat)
-		bitmap[e] = byte(lpat)
-		set16(bitmap[s+off:], uint16(lpat&0xff)<<shift)
 		lpat >>= 8
 		s += stride
-		e -= stride
 	}
 
 	// Alignment boxes.
@@ -1226,29 +1360,40 @@ func vplan(v Version, l Level) *Plan {
 	// One lonely black pixel
 	bitmap[(siz-8)*stride+1] = 0x80
 
+End:
 	sz := len(p.Map)
 	for n := sz; n < len(bitmap); {
 		n += copy(bitmap[n:], bitmap[:n])
 	}
 	for i := range p.Pattern {
 		p.Pattern[i], bitmap = bitmap[:sz], bitmap[sz:]
+		if len(bitmap) == 0 {
+			break
+		}
 	}
 	return p
 }
 
 // fplan sets the format bits
-func fplan(l Level, mask int, p *Plan) {
+func fplan(fb uint16, mask int, p *Plan) {
 	// Format pixels.
-	fb := ftab[l][mask]
 	b := p.Pattern[mask]
 	siz := p.Size
 	stride := (siz + 7) >> 3
 	off := 1
+	µ := siz < 20
+	if µ {
+		off += stride
+	}
 	for i, v := 0, fb; i < 15; i++ {
 		switch i {
 		case 6:
-			off += stride
+			off = stride*7 + 1
 		case 8:
+			if µ {
+				b[8*stride] |= byte(fb >> 8)
+				return
+			}
 			off = stride*(siz-7) + 1
 		}
 		b[off] |= byte(v << 7)
@@ -1292,14 +1437,19 @@ var maskPat = [8][]uint16{
 func mplan(mask int, p *Plan) {
 	stride := (p.Size + 7) >> 3
 	var mpbuf [(MaxVersion*4 + 17 + 7) / 8 * 6]byte // 136 byte array
+	mm := mask
 	b := p.Pattern[mask]
 	m := p.Map[:len(b)]
-	mpx := maskPat[mask] // mask patterns
-	// create a pattern of 1-6 rows (3-136 bytes)
+	if p.Size < 20 {
+		mm = [4]int{1, 4, 6, 7}[mask]
+	}
+	mpx := maskPat[mm] // mask patterns
+	// create a pattern of 1-6 rows of 2-23 bytes (3-136 bytes)
 	for i, v := range mpx {
-		pr := mpbuf[i*stride:][:stride]
+		pr := mpbuf[i*stride:]
 		_ = pr[2]
 		pr[0], pr[1], pr[2] = byte(v>>4), byte(v>>2), byte(v)
+		pr = pr[:stride]
 		for n := 3; n < len(pr); n += copy(pr[n:], pr[:n]) {
 		}
 	}

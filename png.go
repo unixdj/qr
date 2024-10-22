@@ -59,7 +59,7 @@ var (
 //
 // PNG returns nil if the image would be over 64 gigapixels.
 func (c *Code) PNG() []byte {
-	if w, err := encode(nil, c); err == nil {
+	if w, err := encodePNG(nil, c); err == nil {
 		return w.buf.Bytes()
 	}
 	return nil
@@ -70,7 +70,7 @@ func (c *Code) EncodePNG(w io.Writer) error {
 	if w == nil {
 		return ErrArgs
 	}
-	_, err := encode(w, c)
+	_, err := encodePNG(w, c)
 	return err
 }
 
@@ -88,7 +88,7 @@ type pngWriter struct {
 
 const pngHeader = "\x89PNG\r\n\x1a\n"
 
-func encode(ww io.Writer, c *Code) (*pngWriter, error) {
+func encodePNG(ww io.Writer, c *Code) (*pngWriter, error) {
 	if !c.isValid() {
 		return nil, ErrArgs
 	}

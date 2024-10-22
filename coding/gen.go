@@ -15,7 +15,7 @@ import (
 
 // tables from qrencode-3.1.1/qrspec.c
 
-var capacity = [41]struct {
+var capacity = [45]struct {
 	width     int
 	words     int
 	remainder int
@@ -62,9 +62,13 @@ var capacity = [41]struct {
 	{169, 3362, 0, [4]int{660, 1260, 1860, 2220}},
 	{173, 3532, 0, [4]int{720, 1316, 1950, 2310}},
 	{177, 3706, 0, [4]int{750, 1372, 2040, 2430}}, //40
+	{11, 5, 0, [4]int{2, 5, 5, 5}},                // M1
+	{13, 10, 0, [4]int{5, 6, 10, 10}},             // M2
+	{15, 17, 0, [4]int{6, 8, 17, 17}},             // M3
+	{17, 24, 0, [4]int{8, 10, 14, 24}},            // M4
 }
 
-var eccTable = [41][4][2]int{
+var eccTable = [45][4][2]int{
 	{{0, 0}, {0, 0}, {0, 0}, {0, 0}},
 	{{1, 0}, {1, 0}, {1, 0}, {1, 0}}, // 1
 	{{1, 0}, {1, 0}, {1, 0}, {1, 0}},
@@ -106,9 +110,13 @@ var eccTable = [41][4][2]int{
 	{{4, 18}, {13, 32}, {48, 14}, {42, 32}},
 	{{20, 4}, {40, 7}, {43, 22}, {10, 67}},
 	{{19, 6}, {18, 31}, {34, 34}, {20, 61}}, //40
+	{{1, 0}, {1, 0}, {1, 0}, {1, 0}},        // M1
+	{{1, 0}, {1, 0}, {1, 0}, {1, 0}},        // M2
+	{{1, 0}, {1, 0}, {1, 0}, {1, 0}},        // M3
+	{{1, 0}, {1, 0}, {1, 0}, {1, 0}},        // M4
 }
 
-var align = [41][2]int{
+var align = [45][2]int{
 	{0, 0},
 	{0, 0}, {18, 0}, {22, 0}, {26, 0}, {30, 0}, // 1- 5
 	{34, 0}, {22, 38}, {24, 42}, {26, 46}, {28, 50}, // 6-10
@@ -118,9 +126,10 @@ var align = [41][2]int{
 	{30, 58}, {34, 62}, {26, 50}, {30, 54}, {26, 52}, //26-30
 	{30, 56}, {34, 60}, {30, 58}, {34, 62}, {30, 54}, //31-35
 	{24, 50}, {28, 54}, {32, 58}, {26, 54}, {30, 58}, //35-40
+	{0, 0}, {0, 0}, {0, 0}, {0, 0}, // M1-M4
 }
 
-var versionPattern = [41]int{
+var versionPattern = [45]int{
 	0,
 	0, 0, 0, 0, 0, 0,
 	0x07c94, 0x085bc, 0x09a99, 0x0a4d3, 0x0bbf6, 0x0c762, 0x0d847, 0x0e60d,
@@ -128,6 +137,18 @@ var versionPattern = [41]int{
 	0x177ec, 0x18ec4, 0x191e1, 0x1afab, 0x1b08e, 0x1cc1a, 0x1d33f, 0x1ed75,
 	0x1f250, 0x209d5, 0x216f0, 0x228ba, 0x2379f, 0x24b0b, 0x2542e, 0x26a64,
 	0x27541, 0x28c69,
+	0, 0, 0, 0,
+}
+
+func calcFormat(fb uint16) uint16 {
+	const formatPoly = 0x537
+	rem := fb
+	for i := 4; i >= 0; i-- {
+		if rem&((1<<10)<<i) != 0 {
+			rem ^= formatPoly << i
+		}
+	}
+	return fb | rem
 }
 
 const (
@@ -199,9 +220,9 @@ func main() {
 package coding
 
 // Version table.
-var vtab = [41]version{
+var vtab = [45]version{
 `)
-	for i := 1; i <= 40; i++ {
+	for i := 1; i <= 44; i++ {
 		apos := align[i][0] - 2
 		if apos < 0 {
 			apos = 100
@@ -210,8 +231,14 @@ var vtab = [41]version{
 		if astride < 1 {
 			astride = 100
 		}
-		fmt.Fprintf(w, "\t%d: {%v, %v, %v, %#x, [4]level{{%v, %v}, {%v, %v}, {%v, %v}, {%v, %v}}},\n",
-			i,
+		var vs string
+		if i <= 40 {
+			vs = fmt.Sprintf("%d", i)
+		} else {
+			vs = fmt.Sprintf("M%d", i-40)
+		}
+		fmt.Fprintf(w, "\t%s: {%v, %v, %v, %#x, [4]level{{%v, %v}, {%v, %v}, {%v, %v}, {%v, %v}}},\n",
+			vs,
 			apos, astride, capacity[i].words,
 			versionPattern[i],
 			eccTable[i][0][0]+eccTable[i][0][1],
@@ -226,24 +253,32 @@ var vtab = [41]version{
 	}
 	fmt.Fprintln(w, "}")
 
-	fmt.Fprint(w, "\n// Format bits.\nvar ftab = [4][8]uint16{\n")
+	fmt.Fprint(w, "\n// QR Code format bits.\nvar ftab = [4][8]uint16{\n")
 	for l := 0; l < 4; l++ {
 		fmt.Fprintf(w, "\t%c: {", "LMQH"[l])
 		for m := 0; m < 8; m++ {
 			fb := uint16(l^1) << 13 // L=01, M=00, Q=11, H=10
 			fb |= uint16(m) << 10   // mask
-			const formatPoly = 0x537
-			rem := fb
-			for i := 4; i >= 0; i-- {
-				if rem&((1<<10)<<i) != 0 {
-					rem ^= formatPoly << i
-				}
-			}
-			fb |= rem
-			fb ^= 0x5412
+			fb = calcFormat(fb) ^ 0x5412
 			fmt.Fprintf(w, "%#04x, ", fb)
 		}
 		fmt.Fprintln(w, "},")
+	}
+	fmt.Fprintln(w, "}")
+
+	fmt.Fprint(w, "\n// Micro QR Code format bits.\n"+
+		"var mftab = [8][4]uint16{\n")
+	for i := 0; i < 8; i++ {
+		fmt.Fprint(w, "\t{")
+		for m := 0; m < 4; m++ {
+			fb := uint16(i) << 12 // 000-111
+			fb |= uint16(m) << 10 // mask
+			fb = calcFormat(fb) ^ 0x4445
+			fmt.Fprintf(w, "%#04x, ", fb)
+		}
+		v := min((i+1)/2, 3)
+		l := i - max(v*2-1, 0)
+		fmt.Fprintf(w, "}, // M%d %c\n", v+1, "LMQH"[l])
 	}
 	fmt.Fprintln(w, "}")
 

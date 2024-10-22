@@ -36,34 +36,48 @@ const (
 	ASCIICompat  = split.ASCIICompat  // ASCII-compatible 8 bit encodings
 )
 
+// Code formats for EncodeData.
+const (
+	QR     = split.QR     // QR code
+	Micro  = split.Micro  // Micro QR code
+	Either = split.Either // Micro QR if data fits, otherwise QR
+)
+
 // Extended Channel Interpretation assignment numbers.
 const (
+	NoECI       = split.NoECI       // No ECI segment
 	Latin1ECI   = split.Latin1ECI   // ISO 8859-1
 	ShiftJISECI = split.ShiftJISECI // Shift JIS
 	UTF8ECI     = split.UTF8ECI     // UTF-8
 	BinaryECI   = split.BinaryECI   // 8-bit binary data
 )
 
-// Encode returns an encoding of text at the given error correction
-// level.
+// Encode returns a QR encoding the text at the given error
+// correction level.
 func Encode(text string, level Level) (*Code, error) {
-	return EncodeData(split.String{Text: text}, level)
+	return EncodeData(split.String{Text: text}, level, QR)
+}
+
+// EncodeMicro returns a Micro QR encoding of text in the given
+// Charset at the given error correction level.  If c is nil, it
+// defaults to UTF8.
+func EncodeMicro(text string, c split.Charset, level Level) (*Code, error) {
+	return EncodeData(split.String{text, c}, level, Micro)
 }
 
 // EncodeText returns an encoding of text in the given Charset at the
-// given error correction level.  If the Charset is nil, it defaults
-// to UTF8.  If eci is not 0, the text is preceded by an ECI mode
-// segment.
-func EncodeText(text string, c split.Charset, eci uint32, level Level) (*Code, error) {
-	return EncodeData(split.Text(text, c, eci), level)
+// given error correction level.  If c is nil, it defaults to UTF8.
+// If eci is non-negative, the text is preceded by an ECI mode segment.
+func EncodeText(text string, c split.Charset, eci int, level Level) (*Code, error) {
+	return EncodeData(split.Text(text, c, eci), level, QR)
 }
 
 // EncodeData returns an encoding of data at the given error
 // correction level.
-func EncodeData(data split.Data, level Level) (*Code, error) {
+func EncodeData(data split.Data, level Level, kind split.Format) (*Code, error) {
 	// Split data into segments.
 	l := coding.Level(level)
-	seg, v, err := split.Split(data, l)
+	seg, v, err := split.Split(data, l, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +86,11 @@ func EncodeData(data split.Data, level Level) (*Code, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Code{cc.Bitmap, cc.Size, cc.Stride, 8, 4, nil, false}, nil
+	bord := 4
+	if cc.Size < 20 {
+		bord = 2
+	}
+	return &Code{cc.Bitmap, cc.Size, cc.Stride, 8, bord, nil, false}, nil
 }
 
 // EncodeMulti returns an encoding of data split across multiple QR
@@ -102,7 +120,7 @@ func EncodeMulti(header, data split.Data, version coding.Version, level Level) (
 
 // EncodeTextMulti is a combination of EncodeText and EncodeMulti.
 // The ECI mode segment is encoded in each code.
-func EncodeTextMulti(text string, c split.Charset, eci uint32, version coding.Version, level Level) ([]*Code, error) {
+func EncodeTextMulti(text string, c split.Charset, eci int, version coding.Version, level Level) ([]*Code, error) {
 	return EncodeMulti(split.ShouldSetECI(eci),
 		split.String{Text: text, Charset: c}, version, level)
 }
@@ -141,7 +159,7 @@ func (c *Code) String() string {
 	// Allocate 3 bytes per pixel + 1 for newline for each 2 rows.
 	var b strings.Builder
 	xx := siz + bord*2 + 1
-	b.Grow(3*xx*xx/2 - xx)
+	b.Grow(xx*xx*3/2 - xx)
 	var y int
 	for y = -bord; y < siz+bord-1; y += 2 {
 		for x := -bord; x < siz+bord; x++ {
@@ -209,6 +227,15 @@ func (c *Code) isValid() bool {
 	siz := c.Size
 	stride := c.Stride
 	bitmap := c.Bitmap
-	return 20 < siz && siz < 180 && siz&3 == 1 && siz/8+1 == stride &&
+	m := 3
+	if siz < 16 {
+		m = 1
+	}
+	v := 8 < siz && siz < 180 && siz&m == 1 && siz/8+1 == stride &&
 		len(bitmap) == siz*stride && c.Scale > 0 && c.Border >= 0
+	mask := byte(0xff) >> (siz & 7)
+	for i := stride - 1; v && i < len(bitmap); i += stride {
+		v = bitmap[i]&mask == 0
+	}
+	return v
 }

@@ -49,7 +49,7 @@ func utf16DecodeRune(s string) (rune, int) {
 // utf16Alnum creates a UTF-16BE numeric or alphanumeric mode encoder.
 func utf16Alnum(mode coding.Mode) coding.Mode {
 	m := coding.GetMode(mode)
-	// Use original CountLength and Accepts.
+	// Use original Indicator, CountLength and Accepts.
 	m.Name = "utf16-" + m.Name
 	// EncodedLength calls the original with half the byte count.
 	el := m.EncodedLength
@@ -73,9 +73,9 @@ var (
 	utf16Alpha = utf16Alnum(coding.Alphanumeric)
 	utf16Kanji = func() coding.Mode {
 		m := coding.GetMode(coding.ShiftJISKanji)
-		// Use original CountLength and EncodedLength.
-		// The latter is compatible, as both UTF-16 and Shift JIS
-		// encode QR Kanji characters as two bytes.
+		// Use original Indicator, CountLength and EncodedLength.
+		// The latter is compatible, as QR Kanji characters are
+		// encoded as two bytes in both UTF-16 and Shift JIS.
 		m.Name = "utf16-kanji"
 		m.CutRune = utf16DecodeRune
 		m.Accepts = coding.IsKanji

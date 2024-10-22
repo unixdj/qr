@@ -15,7 +15,8 @@ Improvements to qr.Encode:
 Added features in package qr:
 
   * Splitting text into multiple QR codes (Structured Append)
-  * Printing QR codes as text
+  * Micro QR codes
+  * Printing codes as UTF-8 text
   * Prepending an ECI mode segment to set character encoding
   * Character encodings:
     * UTF-8 (default)
@@ -30,7 +31,7 @@ Added features in package qr:
     * Reverse colours (also for text printing)
     * Custom colour palette (PNG/EncodePNG and Image only)
 
-Packages coding and split:
+Encoding customisation (packages coding and split):
 
   * Adding segment encoders
   * Adding input character encodings

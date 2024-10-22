@@ -92,14 +92,14 @@ func pbmRow8(row, srow []byte, white byte) {
 		binary.LittleEndian.PutUint64(row, b)
 		row = row[8:]
 	}
-	switch len(row) {
-	case 5:
+	if len(row) > 4 {
 		binary.LittleEndian.PutUint32(row, uint32(b))
 		b >>= 32
 		row = row[4:]
-		fallthrough
-	case 1:
-		row[0] = byte(b)
+	}
+	for i := range row {
+		row[i] = byte(b)
+		b >>= 8
 	}
 }
 
@@ -119,13 +119,9 @@ func pbmRow4(row, srow []byte, white byte, slen int) {
 		binary.BigEndian.PutUint32(row, b)
 		row = row[4:]
 	}
-	b >>= 8
-	switch len(row) {
-	case 3:
-		binary.BigEndian.PutUint16(row[1:3], uint16(b))
-		fallthrough
-	case 1:
-		row[0] = byte(b >> 16)
+	for i := range row {
+		row[i] = byte(b >> 24)
+		b <<= 8
 	}
 }
 
