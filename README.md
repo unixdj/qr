@@ -1,9 +1,21 @@
-Go QR encoder package.
+QR encoder Go package and command line tool.
 
 go get [-u] github.com/unixdj/qr
 
 Based on rsc.io/qr by Russ Cox.  Drop in replacement for package qr.
 The API of package coding is incompatible.
+
+Command line tool:
+
+  * All of the encoding options listed below
+  * Output: PNG using bespoke and standard Go encoders, PBM,
+    Encapsulated PostScript, UTF-8 and ASCII text
+  * Rotating and reflecting codes
+  * Encoding entire data in byte mode
+  * Disabling Kanji mode
+  * True 8 bit byte mode for structured append splitting
+  * Shift JIS input with ISO 8859-1 byte mode
+  * Conversion to upper case for shorter encoded length
 
 Improvements to qr.Encode:
 
