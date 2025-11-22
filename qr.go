@@ -4,7 +4,7 @@
 // license that can be found in the LICENSE file.
 
 /*
-Package qr encodes QR codes.
+Package qr encodes QR and Micro QR codes.
 */
 package qr // import "github.com/unixdj/qr"
 

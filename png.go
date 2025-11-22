@@ -545,7 +545,10 @@ func (w *pngWriter) initCodes(c *Code, white byte, r rowParams) *header {
 	siz := c.Size
 	scale := c.Scale
 	bord := c.Border
-	if scale == 1 && bord <= 1 && siz == 1*4+17 {
+	if scale == 1 && siz <= 1*4+17 &&
+		(siz == 11 || siz == 1*4+17 && bord <= 1 || bord == 0) {
+		// scale=1, ver=1 bord<=1 or ver=[M1,M4] bord=0 or ver=M1:
+		// use fixed Huffman tables
 		w.sym = fixedSym[:]
 		w.dist = fixedDist[:]
 		return nil

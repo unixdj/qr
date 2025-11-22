@@ -235,12 +235,11 @@ type ModeEncoder struct {
 	// If nil, the length of the string in bytes is used.
 	Count func(string) int
 
-	// Encode4, Encode3, Encode2 and Encode1 return the encoding of the
-	// bytes and its length in bits.  The encoder calls a non-nil
-	// Encode{N} repeatedly as long as N source bytes are available, in
+	// Encode3, Encode2 and Encode1 return the encoding of the bytes
+	// and its length in bits.  The encoder calls a non-nil Encode{N}
+	// repeatedly as long as N source bytes are available, in
 	// descending order of N.  If all are nil, each byte is encoded as
 	// 8 bits.  The encoder panics if not all bytes are consumed.
-	Encode4 func([4]byte) (uint32, int)
 	Encode3 func([3]byte) (uint32, int)
 	Encode2 func([2]byte) (uint32, int)
 	Encode1 func(byte) (uint32, int)
@@ -384,10 +383,10 @@ var _stdmodes = []ModeEncoder{
 		Indicator: 7,
 		Accepts:   nothing,
 		Valid: func(s string) bool {
-			mask := ^byte(0xff >> len(s))
-			ok := 0 < len(s) && len(s) < 4 && s[0]&mask == mask<<1
-			if ok && len(s) > 1 {
-				ok = (s[0]&^mask | s[1]&(mask<<1)) != 0
+			ok := s != "" && len(s) == max(1, int(s[0]>>6))
+			if ok && len(s) == 3 {
+				ok = uint32(s[0]&^0xc0)<<16+uint32(s[1])<<8+
+					uint32(s[2]) < 1e6
 			}
 			return ok
 		},
@@ -651,14 +650,8 @@ func (seg Segment) Encode(b *Bits, class int) error {
 	}
 	b.Write(uint32(w), int(m.CountLength[class]))
 	// encode the string
-	enc4, enc3, enc2, enc1 := m.Encode4, m.Encode3, m.Encode2, m.Encode1
-	if enc4 != nil || enc3 != nil || enc2 != nil || enc1 != nil {
-		if enc4 != nil {
-			for len(s) >= 4 {
-				b.Write(enc4([4]byte{s[0], s[1], s[2], s[3]}))
-				s = s[4:]
-			}
-		}
+	enc3, enc2, enc1 := m.Encode3, m.Encode2, m.Encode1
+	if enc3 != nil || enc2 != nil || enc1 != nil {
 		if enc3 != nil {
 			for len(s) >= 3 {
 				b.Write(enc3([3]byte{s[0], s[1], s[2]}))
@@ -1110,10 +1103,10 @@ func (p *Plan) Serialise(s BitStream, bitmap []byte) {
 			}
 		}
 		x -= 2
-		if x == 5 && siz > 20 { // vertical timing strip
-			x--
-		} else if x < 0 {
+		if x < 0 {
 			return
+		} else if x == 5 && siz > 20 { // vertical timing strip
+			x--
 		}
 		lx, lb = x>>3, byte(0x80)>>(x&7)
 		rxOff, rb = int(lb&1), byte(0x80)>>((x+1)&7)

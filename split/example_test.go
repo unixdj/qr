@@ -94,7 +94,7 @@ var (
 	// Create the UTF-16BE split.Charset using the modes above and
 	// standard byte mode.  UTF-16 encodes ASCII digits as 2 bytes.
 	utf16be = split.NewCharset(split.ModeList{
-		utf16Num, utf16Alpha, utf16Kanji, coding.Byte}, 2)
+		utf16Num, utf16Alpha, coding.Byte, utf16Kanji}, 2)
 )
 
 func ExampleNewCharset() {
@@ -114,7 +114,7 @@ func ExampleNewCharset() {
 	// Demo: Split the string and print the segments.  The string above
 	// demonstrates segments of all four modes and merged segments.
 	seg, v, err := split.Split(split.Text(s, utf16be, UTF16BEECI),
-		coding.M)
+		coding.M, split.QR)
 	if err != nil {
 		log.Fatalln(err)
 	}

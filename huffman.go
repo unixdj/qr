@@ -100,7 +100,7 @@ Optimisations:
     pairs of trees with same freq together, then insert the whole
     span.
   - Save insertion point after traversal for next iteration.  If it
-  points into a merged tree after merge, reset to head.
+    points into a merged tree after merge, reset to head.
   - At stage 4 sort short symbol lists using insertion sort, for
     longer ones use a bit field instead.
 
@@ -279,16 +279,15 @@ func buildCodes(c ctable, f []int, maxdepth int) ctable {
 	}
 
 	// Populate code table.
-	var next code
-	base := byte(head.at)
-	for depth, nsym := range head.syms[:head.depth+1] {
+	next := code{nbit: byte(head.at - 1)}
+	for _, nsym := range head.syms[:head.depth+1] {
 		if next.bit>>next.nbit != 0 {
 			panic("qr: unbalanced Huffman tree")
 		}
+		next.nbit++
 		if nsym == 0 {
 			continue
 		}
-		next.nbit = base + byte(depth)
 		lit := f[:nsym]
 		f = f[nsym:]
 		// fmt.Println(lit)
