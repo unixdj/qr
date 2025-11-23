@@ -235,9 +235,8 @@ func parity(seg coding.Segment) byte {
 
 // SplitMulti returns segments for data split across up to 16 QR codes
 // ("Structured Append symbols") of the given version and error
-// correction level, with header at the beginning of each code.
-// header may be nil.
-func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]coding.Segment, error) {
+// correction level.
+func SplitMulti(data Data, ver coding.Version, level coding.Level) ([][]coding.Segment, error) {
 	if ver < coding.MinVersion || ver > coding.MaxVersion {
 		return nil, coding.ErrVersion
 	}
@@ -249,19 +248,8 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 		sabits   = 4 + 2*8 // Structured Append Header bit size
 	)
 
-	// prepare Structured Append segment and header
-	if header == nil {
-		header = Null{}
-	}
-	hs, _, err := header.Splitter()
-	if err != nil {
-		return nil, err
-	}
-	class := ver.SizeClass()
-	hr, hbits := hs.Split(class)
-
 	// calculate data size per code
-	dsize := ver.DataBits(level) - sabits - hbits
+	dsize := ver.DataBits(level) - sabits
 	if dsize < 4 {
 		return nil, ErrLongHeader
 	} else if data.MinLength() > dsize*maxCodes {
@@ -273,47 +261,42 @@ func SplitMulti(header, data Data, ver coding.Version, level coding.Level) ([][]
 	if err != nil {
 		return nil, err
 	}
-	parts := make([]Result, 0, maxCodes)
+	var (
+		class = ver.SizeClass()
+		segs  = make([][]coding.Segment, 0, maxCodes)
+		hlen  = 1             // header segments: StructAppend (+ECI?)
+		eci   *coding.Segment // last eci segment
+		esize int             // encoded length of eci
+		par   byte            // parity
+	)
+	// set segments, transform (for Kanji), calculate parity
 	for sp != nil {
-		if len(parts) == maxCodes {
+		if len(segs) == maxCodes {
 			return nil, ErrLongText
 		}
 		var r Result
-		if r, _, sp = sp.SplitTo(dsize, class); r == nil {
+		if r, _, sp = sp.SplitTo(dsize-esize, class); r == nil {
 			return nil, ErrLongHeader
 		}
-		parts = append(parts, r)
-	}
-
-	// allocate segments, copy structured append segment and header
-	segs := make([][]coding.Segment, len(parts))
-	hsegs := 1 + hr.Len()
-	segs[0] = hr.Append(make([]coding.Segment, 1, hsegs+parts[0].Len()))
-	segs[0][0].Mode = StructAppend
-	for i := 1; i < len(segs); i++ {
-		segs[i] = make([]coding.Segment, hsegs, hsegs+parts[i].Len())
-		copy(segs[i], segs[0])
-	}
-	var par byte // parity
-	// if odd number of codes, calculate header parity
-	if len(segs)&1 != 0 {
-		for j, v := 1, segs[0]; j < len(v); j++ {
-			if v[j], err = v[j].Transform(); err != nil {
+		s := make([]coding.Segment, hlen, hlen+r.Len())
+		s[0].Mode = coding.StructAppend
+		if eci != nil {
+			s[1] = *eci
+		}
+		s = r.Append(s)
+		for i := hlen; i < len(s); i++ {
+			if s[i], err = s[i].Transform(); err != nil {
 				return nil, err
 			}
-			par ^= parity(v[j])
-		}
-	}
-
-	// copy data segments, transform (for Kanji), calculate parity
-	for i := range segs {
-		segs[i] = parts[i].Append(segs[i])
-		for j, v := hsegs, segs[i]; j < len(v); j++ {
-			if v[j], err = v[j].Transform(); err != nil {
-				return nil, err
+			if s[i].Mode == coding.ECI {
+				eci = &s[i]
+				esize = 4 + 8*len(s[i].Text)
+				hlen = 2
+			} else {
+				par ^= parity(s[i])
 			}
-			par ^= parity(v[j])
 		}
+		segs = append(segs, s)
 	}
 
 	// set Structured Append Data for all parts

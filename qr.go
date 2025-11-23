@@ -94,11 +94,10 @@ func EncodeData(data split.Data, level Level, kind split.Format) (*Code, error) 
 }
 
 // EncodeMulti returns an encoding of data split across multiple QR
-// codes with the given version and error correction level.  If header
-// is not nil, it is added at the beginning of each code.
-func EncodeMulti(header, data split.Data, version coding.Version, level Level) ([]*Code, error) {
+// codes with the given version and error correction level.
+func EncodeMulti(data split.Data, version coding.Version, level Level) ([]*Code, error) {
 	l := coding.Level(level)
-	parts, err := split.SplitMulti(header, data, version, l)
+	parts, err := split.SplitMulti(data, version, l)
 	if err != nil {
 		return nil, err
 	}
@@ -121,8 +120,7 @@ func EncodeMulti(header, data split.Data, version coding.Version, level Level) (
 // EncodeTextMulti is a combination of EncodeText and EncodeMulti.
 // The ECI mode segment is encoded in each code.
 func EncodeTextMulti(text string, c split.Charset, eci int, version coding.Version, level Level) ([]*Code, error) {
-	return EncodeMulti(split.ShouldSetECI(eci),
-		split.String{Text: text, Charset: c}, version, level)
+	return EncodeMulti(split.Text(text, c, eci), version, level)
 }
 
 // A Code is a square pixel grid.
