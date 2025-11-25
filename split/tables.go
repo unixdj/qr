@@ -2,10 +2,12 @@
 
 package split
 
+import "github.com/unixdj/qr/coding"
+
 // Maximum data bits for each error correction level and size class.
 var sizeLimit = [4][7]int{
-	L: {20, 40, 84, 128, 1856, 10960, 23648},
-	M: {0, 32, 68, 112, 1456, 8496, 18672},
-	Q: {0, 0, 0, 80, 1056, 6032, 13328},
-	H: {0, 0, 0, 0, 800, 4768, 10208},
+	coding.L: {20, 40, 84, 128, 1856, 10960, 23648},
+	coding.M: {0, 32, 68, 112, 1456, 8496, 18672},
+	coding.Q: {0, 0, 0, 80, 1056, 6032, 13328},
+	coding.H: {0, 0, 0, 0, 800, 4768, 10208},
 }

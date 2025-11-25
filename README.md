@@ -30,6 +30,7 @@ Added features in package qr:
   * Micro QR codes
   * Printing codes as UTF-8 text
   * Prepending an ECI mode segment to set character encoding
+  * FNC1 mode support
   * Character encodings:
     * UTF-8 (default)
     * UTF-8 with byte mode segments encoded as ISO 8859-1

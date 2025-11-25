@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
@@ -176,8 +177,11 @@ const (
 	Kanji                     // kanji mode, UTF-8 text
 	Latin1                    // byte mode, UTF-8 text encoded as ISO 8859-1
 	ShiftJISKanji             // kanji mode, Shift JIS text
+	FNC1Alpha                 // alphanumeric mode for FNC1 codes
 	ECI                       // eci mode, raw segment
 	StructAppend              // structured append, raw segment
+	FNC1First                 // FNC1 in 1st position
+	FNC1Second                // FNC1 in 2nd position
 )
 
 // A Mode is a QR segment encoder.
@@ -378,6 +382,19 @@ var _stdmodes = []ModeEncoder{
 				13
 		},
 	},
+	FNC1Alpha: {
+		Name:          "fnc1-alphanumeric",
+		Indicator:     2,
+		CountLength:   [7]byte{0, 3, 4, 5, 9, 11, 13},
+		EncodedLength: func(b, r int) int { return (11*b + 1) / 2 },
+		Accepts: func(r rune) bool {
+			return alphamask>>(uint32(r)-' ')&1 != 0 || r == 0x1d
+		},
+		Transform: func(s string) (Segment, bool) {
+			return Segment{strings.ReplaceAll(s, "\x1d", "%"),
+				Alphanumeric}, true
+		},
+	},
 	ECI: {
 		Name:      "eci",
 		Indicator: 7,
@@ -398,6 +415,18 @@ var _stdmodes = []ModeEncoder{
 		Valid: func(s string) bool {
 			return len(s) == 2 && s[0]>>4 <= s[0]&0x0f
 		},
+	},
+	FNC1First: {
+		Name:      "fnc1-in-1st-position",
+		Indicator: 5,
+		Accepts:   nothing,
+		Valid:     func(s string) bool { return s == "" },
+	},
+	FNC1Second: {
+		Name:      "fnc1-in-2nd-position",
+		Indicator: 9,
+		Accepts:   nothing,
+		Valid:     func(s string) bool { return len(s) == 1 },
 	},
 }
 
@@ -758,7 +787,7 @@ func (c *Code) Penalty() int {
 	//   - BoxP: for possibly overlapping 2x2 boxes -> 3
 	//   - FindP: for possibly overlapping finder patterns -> 40
 	//     The pattern is 010111010 with 000 on either side,
-	//     or inverted(?); may extend into the quiet zone
+	//     or inverted; may extend into the quiet zone
 	//   - BalP: for n% of black pixels -> 10*(celing(abs(n-50)/5)-1)
 	//
 	// https://www.nayuki.io/page/creating-a-qr-code-step-by-step

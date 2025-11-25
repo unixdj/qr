@@ -38,9 +38,11 @@ var g = struct {
 	cx       int             // randr source X coordinate index in inc
 	inc      [2]int          // randr source X,Y coordinate increments
 	eci      int             // ECI segment value
+	fnc1     int             // FNC1 codeword value
 	bg, fg   rgba            // colour
 	colSet   bool            // colour set
 	eciflag  bool            // ECI flag
+	fnc1flag bool            // FNC1 flag
 	latin1   bool            // Latin-1 byte mode
 	sjis     bool            // Shift JIS input
 	nokanji  bool            // kanji mode disabled
@@ -50,9 +52,11 @@ var g = struct {
 	multi    bool            // structured append
 	cformat  split.Format    // QR / Micro / Either
 }{
-	inc: [2]int{1, 1},
-	bg:  rgba{0xff, 0xff, 0xff, 0xff},
-	fg:  rgba{0x00, 0x00, 0x00, 0xff},
+	inc:  [2]int{1, 1},
+	bg:   rgba{0xff, 0xff, 0xff, 0xff},
+	fg:   rgba{0x00, 0x00, 0x00, 0xff},
+	fnc1: -1,
+}
 }
 
 func printUsage(w io.Writer) {
@@ -81,6 +85,10 @@ segments enabled, no ECI segment.
 	var b bytes.Buffer
 	cl.PrintOptions(&b)
 	bb := b.Bytes()
+	if n := bytes.Index(bb, []byte(" [256]")); n != 1 {
+		w.Write(bb[:n])
+		bb = bb[n+len(" [256]"):]
+	}
 	if n := bytes.Index(bb, []byte(" [-1]")); n != 1 {
 		w.Write(bb[:n])
 		bb = bb[n+len(" [-1]"):]
@@ -104,9 +112,9 @@ func help() {
 }
 
 func version() {
-	fmt.Println(`qr version 0.5.2
+	fmt.Println(`qr version 0.8.0
 Copyright (c) 2011 The Go Authors
-Copyright (c) 2024 Vadim Vygonets`)
+Copyright (c) 2025 Vadim Vygonets`)
 	os.Exit(0)
 }
 
@@ -230,9 +238,12 @@ func parseFlags() {
 		`to the filename before suffix`, "file")
 	getopt.Flag(&g.eciflag, 'e', "encode ECI segment setting "+
 		"character encoding according to -1 and -k flags")
-	eci := getopt.Signed('E', -1, &(getopt.SignedLimit{0, 21, 0, 999999}),
+	getopt.Flag(&g.fnc1flag, 'c', "set FNC1 in first position")
+	fnc1 := getopt.Unsigned('C', 256, &getopt.UnsignedLimit{0, 8, 0, 0},
+		"set FNC1 in second position to the given value", "code")
+	eci := getopt.Signed('E', -1, &getopt.SignedLimit{0, 21, 0, 999999},
 		"encode ECI segment with the given value; overrides -e", "eci")
-	ver := getopt.Unsigned('v', 1, &(getopt.UnsignedLimit{0, 8, 1, 40}),
+	ver := getopt.Unsigned('v', 1, &getopt.UnsignedLimit{0, 8, 1, 40},
 		"QR code version for structured append", "ver")
 	lev := getopt.Enum('l',
 		[]string{"l", "m", "q", "h", "L", "M", "Q", "H"}, "l",
@@ -251,8 +262,12 @@ func parseFlags() {
 		`default is utf8, otherwise png`, "type")
 
 	getopt.Parse()
+	if g.fnc1flag && getopt.IsSet('C') {
+		fmt.Fprintln(os.Stderr, "-c and -C are incompatible")
+		usage()
+	}
 	if g.cformat != 0 {
-		for _, v := range "SeE" {
+		for _, v := range "SeEcC" {
 			if getopt.IsSet(v) {
 				fmt.Fprintf(os.Stderr,
 					"-M and -%c are incompatible\n", v)
@@ -266,6 +281,10 @@ func parseFlags() {
 	g.eci = int(*eci)
 	if !getopt.IsSet('m') {
 		g.border = -1
+	}
+	if *fnc1 < 256 {
+		g.fnc1 = int(*fnc1)
+		g.fnc1flag = true
 	}
 	if *ff == "" {
 		if !fno.Seen() && isatty.IsTerminal(uintptr(syscall.Stdout)) {
@@ -384,15 +403,22 @@ func main() {
 		if err != nil {
 			log.Fatalln(err)
 		}
-		for i, c := range cc {
-			write(i, c)
+		for i := range cc {
+			write(i, cc[i])
 		}
 	} else {
-		// c, err := qr.EncodeText(s, cs, g.eci, g.lev)
 		var d split.Data
 		if g.byteOnly {
-			d = split.List{split.ShouldSetECI(g.eci),
-				split.Segment{s, bm}}
+			e := split.ShouldSetECI(g.eci)
+			t := split.Segment{s, bm}
+			if g.fnc1flag {
+				t.Text = strings.ReplaceAll(s, "%", "%%")
+				d = split.List{e, split.SetFNC1(g.fnc1), t}
+			} else {
+				d = split.List{e, t}
+			}
+		} else if g.fnc1flag {
+			d = split.FNC1Text(s, cs, g.eci, g.fnc1)
 		} else {
 			d = split.Text(s, cs, g.eci)
 		}

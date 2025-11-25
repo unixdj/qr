@@ -48,7 +48,7 @@ var (
 
 // PNG returns a PNG image displaying the code.
 //
-// PNG uses a custom encoder tailored to QR codes.
+// PNG uses a bespoke encoder tailored to QR codes.
 // At c.Scale 8 (default) it runs 40-65x faster than
 // calling png.Encode on c.Image(),
 // with encoded size ranging from 22-24% smaller
@@ -65,7 +65,8 @@ func (c *Code) PNG() []byte {
 	return nil
 }
 
-// EncodePNG writes a PNG image displaying the code to w.
+// EncodePNG writes a PNG image displaying the code to w using a
+// bespoke encoder.
 func (c *Code) EncodePNG(w io.Writer) error {
 	if w == nil {
 		return ErrArgs

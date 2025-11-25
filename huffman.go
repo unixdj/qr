@@ -157,6 +157,7 @@ func buildCodes(c ctable, f []int, maxdepth int) ctable {
 	}
 
 	// Build linked list of leaves ordered by frequency.
+	// Symbols within each frequency are sorted in reverse order.
 	nodes := make([]tree, syms) // node pool
 	idx := 0                    // next empty node
 	var head *tree              // linked list
@@ -221,8 +222,9 @@ func buildCodes(c ctable, f []int, maxdepth int) ctable {
 		}
 		*node.skip = *ins
 		*ins = node
-		if skip := node.skip; *skip != nil {
-			ins = skip // ensure *ins!=nil to avoid backtracking
+		// advance ins, ensuring *ins!=nil to avoid backtracking
+		if *node.skip != nil {
+			ins = node.skip
 		}
 	}
 

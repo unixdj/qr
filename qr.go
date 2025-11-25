@@ -52,8 +52,9 @@ const (
 	BinaryECI   = split.BinaryECI   // 8-bit binary data
 )
 
-// Encode returns a QR encoding the text at the given error
-// correction level.
+// Encode returns a QR encoding of text at the given error
+// correction level.  It is equivalent to
+// EncodeText(text, UTF8, NoECI, level).
 func Encode(text string, level Level) (*Code, error) {
 	return EncodeData(split.String{Text: text}, level, QR)
 }
@@ -72,8 +73,18 @@ func EncodeText(text string, c split.Charset, eci int, level Level) (*Code, erro
 	return EncodeData(split.Text(text, c, eci), level, QR)
 }
 
+// EncodeFNC1Text returns a QR encoding of text in FNC1 mode in the
+// given Charset at the given error correction level.  If c is nil,
+// it defaults to UTF8.  The text is preceded by an "FNC1 in 1st
+// position" segment if fnc1 is negative, otherwise by an "FNC1 in 2nd
+// position" segment with the codeword set to fnc1.  If eci is
+// non-negative, the data starts with an ECI mode segment.
+func EncodeFNC1Text(text string, c split.Charset, eci int, fnc1 int, level Level) (*Code, error) {
+	return EncodeData(split.FNC1Text(text, c, eci, fnc1), level, QR)
+}
+
 // EncodeData returns an encoding of data at the given error
-// correction level.
+// correction level.  kind must be QR, Micro or Either.
 func EncodeData(data split.Data, level Level, kind split.Format) (*Code, error) {
 	// Split data into segments.
 	l := coding.Level(level)

@@ -17,11 +17,13 @@ func main() {
 
 package split
 
+import "github.com/unixdj/qr/coding"
+
 // Maximum data bits for each error correction level and size class.
 var sizeLimit = [4][7]int{
 `)
 	for i := coding.L; i <= coding.H; i++ {
-		fmt.Printf("\t%s: {", i)
+		fmt.Printf("\tcoding.%s: {", i)
 		pref := ""
 		for j := 0; j < 7; j++ {
 			fmt.Print(pref, sizeClass[j].DataBits(i))
