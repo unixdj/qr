@@ -1252,7 +1252,8 @@ type version struct {
 	apos    int
 	astride int
 	bytes   int
-	pattern int
+	hpat    uint32
+	vpat    uint32
 	level   [4]level
 }
 
@@ -1354,28 +1355,23 @@ func vplan(v Version, l Level) *Plan {
 	}
 
 	// Version pattern.
-	if v := info.pattern; v != 0 {
+	if vpat := info.vpat; vpat != 0 {
 		// vpat: 3x6 pixels at (siz-11, 0)
-		// hpat: 6x3 pixels at (0, siz-11)
-		off := (siz - 11) / 8
-		shift := (siz - 11) & 7
-		mpat = 0xe000 >> shift
-		var hpat uint32
-		for x := 0; x < 6; x++ {
-			vpat := uint32(v&7) * 0x421 & 0x1041
-			hpat = hpat<<1 | vpat
-			vpat = vpat * 0x8102 & 0xe000 >> shift
-			v >>= 3
+		shift := -siz & 7
+		mpat = 7 << shift
+		for off := 6*stride - 3; off >= 0; off -= stride {
 			set16(p.Map[off:], mpat)
-			set16(bitmap[off:], uint16(vpat))
-			off += stride
+			set16(bitmap[off:], uint16(vpat)&7<<shift)
+			vpat >>= 3
 		}
-		off = (siz - 11) * stride
+		// hpat: 6x3 pixels at (0, siz-11)
+		hpat := info.hpat
+		off = (siz - 9) * stride
 		for i := 0; i < 3; i++ {
 			p.Map[off] = 0xfe
 			bitmap[off] |= byte(hpat << 2)
 			hpat >>= 6
-			off += stride
+			off -= stride
 		}
 	}
 

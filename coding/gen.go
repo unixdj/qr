@@ -237,10 +237,22 @@ var vtab = [45]version{
 		} else {
 			vs = fmt.Sprintf("M%d", i-40)
 		}
-		fmt.Fprintf(w, "\t%s: {%v, %v, %v, %#x, [4]level{{%v, %v}, {%v, %v}, {%v, %v}, {%v, %v}}},\n",
+		var hpat, vpat uint32
+		if v := uint32(versionPattern[i]); v != 0 {
+			for j := 0; j < 18; j++ {
+				vpat = vpat<<1 | v&1
+				v >>= 1
+			}
+			for j, v := 0, vpat; j < 6; j++ {
+				hpat >>= 1
+				hpat |= v & 7 * 0x8420 & 0404040
+				v >>= 3
+			}
+		}
+		fmt.Fprintf(w, "\t%s: {%v, %v, %v, %#x, %#x, [4]level{{%v, %v}, {%v, %v}, {%v, %v}, {%v, %v}}},\n",
 			vs,
 			apos, astride, capacity[i].words,
-			versionPattern[i],
+			hpat, vpat,
 			eccTable[i][0][0]+eccTable[i][0][1],
 			capacity[i].ec[0]/(eccTable[i][0][0]+eccTable[i][0][1]),
 			eccTable[i][1][0]+eccTable[i][1][1],
