@@ -7,6 +7,7 @@
 package coding // import "github.com/unixdj/qr/coding"
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strconv"
@@ -99,8 +100,9 @@ func (v Version) DataBits(l Level) int {
 }
 
 type Bits struct {
-	b    []byte
-	nbit int
+	b    []byte // full bytes
+	bit  uint64 // bit cache
+	nbit int    // bits in cache
 }
 
 // NewBits returns Bits with enough capacity for a QR code of the
@@ -116,17 +118,36 @@ func NewBits(v Version, l Level) *Bits {
 
 func (b *Bits) Reset() {
 	b.b = b.b[:0]
+	b.bit = 0
 	b.nbit = 0
 }
 
-func (b *Bits) Bits() int {
-	return b.nbit
+// flush flushes the bit cache.
+// Any fractional byte is padded with zeroes to byte boundary.
+func (b *Bits) flush() {
+	if n := b.nbit; n != 0 {
+		buf := b.add((n + 7) >> 3)
+		bb := b.bit
+		for i := range buf {
+			buf[i] = byte(bb >> 56)
+			bb <<= 8
+		}
+		b.bit, b.nbit = 0, 0
+	}
 }
 
+// Bits returns the number of bits written to b.
+func (b *Bits) Bits() int {
+	return len(b.b)*8 + b.nbit
+}
+
+// Bytes returns a slice holding data written to b.
+// Bytes panics if the number of bytes written is fractional.
 func (b *Bits) Bytes() []byte {
-	if b.nbit%8 != 0 {
+	if b.nbit&7 != 0 {
 		panic("qr: fractional byte")
 	}
+	b.flush()
 	return b.b
 }
 
@@ -136,37 +157,41 @@ func (b *Bits) growTo(n int) {
 	}
 }
 
-func (b *Bits) Grow(n int) { b.growTo(len(b.b) + n) }
+// Grow grows b's capacity, if necessary, to guarantee space for
+// another n bytes.
+func (b *Bits) Grow(n int) { b.growTo(len(b.b) + (b.nbit+7)/8 + n) }
 
-// Add adds n bytes to b and returns the added slice.
-func (b *Bits) Add(n int) []byte {
-	if b.nbit%8 != 0 {
-		panic("qr: fractional byte")
-	}
-	b.Grow(n)
+// add adds n bytes to b and returns the added slice.
+func (b *Bits) add(n int) []byte {
 	start := len(b.b)
-	b.b = b.b[:start+n]
-	b.nbit = 8 * len(b.b)
+	end := start + n
+	if cap(b.b) < end {
+		b.growTo(end)
+	}
+	b.b = b.b[:end]
 	return b.b[start:]
 }
 
+// Add adds n bytes to b and returns the added slice.
+// Add panics if the number of bytes written is fractional.
+func (b *Bits) Add(n int) []byte {
+	if b.nbit&7 != 0 {
+		panic("qr: fractional byte")
+	}
+	b.flush()
+	return b.add(n)
+}
+
+// Write writes nbit bits in v to b.
 func (b *Bits) Write(v uint32, nbit int) {
-	v <<= 32 - nbit
-	if rem := -b.nbit & 7; rem != 0 {
-		b.b[len(b.b)-1] |= byte(v >> (32 - rem))
-		if rem >= nbit {
-			b.nbit += nbit
-			return
-		}
-		b.nbit += rem
-		nbit -= rem
-		v <<= rem
+	bb := b.bit | uint64(v)<<(64-nbit)>>b.nbit
+	n := b.nbit + nbit
+	if n >= 64 {
+		binary.BigEndian.PutUint64(b.add(8), bb)
+		n -= 64
+		bb = uint64(v) << (64 - n)
 	}
-	for n := nbit; n > 0; n -= 8 {
-		b.b = append(b.b, byte(v>>24))
-		v <<= 8
-	}
-	b.nbit += nbit
+	b.bit, b.nbit = bb, n
 }
 
 // Predefined encoding modes.
@@ -716,8 +741,8 @@ func (seg Segment) Encode(b *Bits, class int) error {
 			s = ""
 		}
 	} else {
+		b.flush()
 		b.b = append(b.b, s...)
-		b.nbit += len(s) * 8
 		s = ""
 	}
 	return nil
@@ -984,37 +1009,37 @@ func makePlan(version Version, level Level) (*Plan, error) {
 }
 
 func (b *Bits) padTo(t, n int) {
-	b.nbit = min(b.nbit+t, n)
-	for len(b.b)*8 < b.nbit {
-		b.b = append(b.b, 0)
+	rem := n - b.Bits()
+	if rem < 0 {
+		panic("qr: too much data")
 	}
-	if len(b.b) < (n+7)>>3 {
-		buf := b.b[len(b.b) : n>>3]
-		b.b = b.b[:(n+7)>>3]
-		b.b[len(b.b)-1] = 0
-		for len(buf) >= 2 {
+	b.Write(0, min(t, rem)) // write up to t zero bits
+	b.flush()               // round up to byte boundary
+	// fill the rest with padding bytes 0xec, 0x11
+	if nn := n>>3 - len(b.b); nn >= 0 {
+		if nn > 1 {
+			buf := b.add(nn)
 			buf[0], buf[1] = 0xec, 0x11
-			buf = buf[2:]
+			for i := 2; i < len(buf); i += copy(buf[i:], buf[:i]) {
+			}
+		} else if nn == 1 {
+			b.b = append(b.b, 0xec)
 		}
-		if len(buf) > 0 {
-			buf[0] = 0xec
+		if n&7 != 0 {
+			b.b = append(b.b, 0) // fractional byte for M1, M3
 		}
 	}
-	b.nbit = len(b.b) * 8
 }
 
 // PadTo adds up to t terminator bits to b and pads it to n bit.
 func (b *Bits) PadTo(t, n int) {
-	b.growTo(n)
+	b.growTo((n + 7) >> 3)
 	b.padTo(t, n)
 }
 
 // AddCheckBytes adds terminator, padding and checksum to b for the
 // given QR version and level.
 func (b *Bits) AddCheckBytes(v Version, l Level) {
-	if b.nbit > nb {
-		panic("qr: too much data")
-	}
 	vt := &vtab[v]
 	b.growTo(vt.bytes)
 	nt := 4
@@ -1034,7 +1059,7 @@ func (b *Bits) AddCheckBytes(v Version, l Level) {
 		if i == normal {
 			db++
 		}
-		rs.ECC(dat[:db], b.Add(lev.check))
+		rs.ECC(dat[:db], b.add(lev.check))
 		dat = dat[db:]
 	}
 

@@ -112,7 +112,7 @@ func help() {
 }
 
 func version() {
-	fmt.Println(`qr version 0.8.0
+	fmt.Println(`qr version 0.8.1
 Copyright (c) 2011 The Go Authors
 Copyright (c) 2025 Vadim Vygonets`)
 	os.Exit(0)
