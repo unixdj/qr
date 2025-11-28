@@ -49,7 +49,7 @@ const (
 )
 
 func (v Version) String() string {
-	if v >= M1 {
+	if M1 <= v && v <= M4 {
 		return []string{"M1", "M2", "M3", "M4"}[v-M1]
 	}
 	return strconv.Itoa(int(v))
@@ -322,7 +322,7 @@ var _stdmodes = []ModeEncoder{
 		CountLength:   [7]byte{0, 3, 4, 5, 9, 11, 13},
 		EncodedLength: func(b, r int) int { return (11*b + 1) / 2 },
 		Accepts: func(r rune) bool {
-			return alphamask>>(uint32(r)-' ')&1 != 0
+			return 1<<(uint32(r)-' ')&alphamask != 0
 		},
 		Encode1: func(b byte) (uint32, int) {
 			return uint32(alpha[b&0x3f]), 6
@@ -388,7 +388,7 @@ var _stdmodes = []ModeEncoder{
 		CountLength:   [7]byte{0, 3, 4, 5, 9, 11, 13},
 		EncodedLength: func(b, r int) int { return (11*b + 1) / 2 },
 		Accepts: func(r rune) bool {
-			return alphamask>>(uint32(r)-' ')&1 != 0 || r == 0x1d
+			return 1<<(uint32(r)-0x1c)&(alphamask<<4|0x02) != 0
 		},
 		Transform: func(s string) (Segment, bool) {
 			return Segment{strings.ReplaceAll(s, "\x1d", "%"),
@@ -605,7 +605,7 @@ func (seg Segment) IsValid() bool {
 
 // EncodedLength returns the encoded length in bits of seg in the
 // given QR version size class.  EncodedLength returns 0 if and only
-// if mode is invalid.  The segment is not validated.
+// if seg.Mode is invalid.  The segment is not validated.
 func (seg Segment) EncodedLength(class int) int {
 	var rlen int
 	m := getMode(seg.Mode)
@@ -661,18 +661,18 @@ func (seg Segment) Encode(b *Bits, class int) error {
 		return SegmentError(seg)
 	}
 	// write header
-	s := ts.Text
 	ind := uint32(m.Indicator)
 	ilen := 4
 	if class < 4 {
 		ilen = class
 		ii := ind>>1 - ind>>3
-		if ind&(ind-1) != 0 || ii >= 1<<ilen {
+		if ind&(ind-1) != 0 || ii>>ilen != 0 {
 			return CompatError{seg.Mode, Version(class) + M1}
 		}
 		ind = ii
 	}
 	b.Write(ind, ilen)
+	s := ts.Text
 	w := len(s)
 	if m.Count != nil {
 		w = m.Count(s)
@@ -753,7 +753,7 @@ func (c *Code) Black(x, y int) bool {
 		c.Bitmap[y*c.Stride+x/8]&(1<<uint(7&^x)) != 0
 }
 
-// Penalty returns the penalty value for a QR code, or the negative
+// Penalty returns the penalty score for a QR code, or the negative
 // evaluation score for a Micro QR code.  The value is used for
 // choosing the mask.
 func (c *Code) Penalty() int {
@@ -1012,7 +1012,6 @@ func (b *Bits) PadTo(t, n int) {
 // AddCheckBytes adds terminator, padding and checksum to b for the
 // given QR version and level.
 func (b *Bits) AddCheckBytes(v Version, l Level) {
-	nb := v.DataBits(l)
 	if b.nbit > nb {
 		panic("qr: too much data")
 	}
@@ -1022,8 +1021,9 @@ func (b *Bits) AddCheckBytes(v Version, l Level) {
 	if v >= M1 {
 		nt = int(v*2 - M1*2 + 3)
 	}
+	nb := v.DataBits(l)
 	b.padTo(nt, nb)
-	nd := (nb + 4) >> 3
+	nd := (nb + 7) >> 3
 
 	dat := b.Bytes()
 	lev := vt.level[l]
@@ -1116,7 +1116,7 @@ func (s *BitStream) Next() byte {
 }
 
 // Serialise writes bits from s to the bitmap in zigzag scan order.
-func (p *Plan) Serialise(s BitStream, bitmap []byte) {
+func (p *Plan) Serialise(bitmap []byte, s BitStream) {
 	siz := p.Size
 	stride := (siz + 7) >> 3
 	pmap := p.Map
@@ -1182,7 +1182,7 @@ func (e *Encoder) Write(text ...Segment) error {
 }
 
 // xor xors a and b into dst.  a and b may not be shorter than dst.
-// dst and a or b should not overlap unless they are the same slice.
+// dst should not overlap with a or b unless they are the same slice.
 func xor(dst, a, b []byte) {
 	a = a[:len(dst)]
 	b = b[:len(dst)]
@@ -1205,7 +1205,7 @@ func (e *Encoder) Code() (*Code, error) {
 	// Construct the bitmap consisting of data and checksum bits.
 	siz, stride := e.p.Size, (e.p.Size+7)>>3
 	data := make([]byte, siz*stride)
-	e.p.Serialise(bits, data)
+	e.p.Serialise(data, bits)
 
 	// Apply masks to the bitmap to construct the actual codes.
 	// Choose the code with the smallest penalty.
@@ -1455,9 +1455,9 @@ var maskPat = [8][]uint16{
 func mplan(mask int, p *Plan) {
 	stride := (p.Size + 7) >> 3
 	var mpbuf [(MaxVersion*4 + 17 + 7) / 8 * 6]byte // 136 byte array
-	mm := mask
 	b := p.Pattern[mask]
 	m := p.Map[:len(b)]
+	mm := mask
 	if p.Size < 20 {
 		mm = [4]int{1, 4, 6, 7}[mask]
 	}
@@ -1486,11 +1486,13 @@ func mplan(mask int, p *Plan) {
 // alignBox draw an alignment (small) box at upper left x, y.
 func alignBox(p *Plan, x, y int) {
 	stride := (p.Size + 7) >> 3
+	m := p.Map
+	b := p.Pattern[0]
 	mpat := uint32(0xf800) >> (x & 7)
 	bpat := uint32(0xf8a8f800) >> (x & 7)
 	for off := y*stride + x>>3; bpat > mpat; off += stride {
-		set16(p.Map[off:], uint16(mpat))
-		set16(p.Pattern[0][off:], uint16(bpat&mpat))
+		set16(m[off:], uint16(mpat))
+		set16(b[off:], uint16(bpat&mpat))
 		bpat >>= 4
 	}
 }
