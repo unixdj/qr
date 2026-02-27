@@ -57,7 +57,6 @@ var g = struct {
 	fg:   rgba{0x00, 0x00, 0x00, 0xff},
 	fnc1: -1,
 }
-}
 
 func printUsage(w io.Writer) {
 	cl := getopt.CommandLine
